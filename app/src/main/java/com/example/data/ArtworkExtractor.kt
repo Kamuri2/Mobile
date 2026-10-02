@@ -38,7 +38,9 @@ object ArtworkExtractor {
     val dominantColorCache = java.util.Collections.synchronizedMap(mutableMapOf<String, Color>())
     private val negativeCache = java.util.Collections.synchronizedSet(HashSet<String>())
 
-    private fun getCacheKey(track: Track): String {
+    fun getCacheKey(track: Track): String {
+        val albumKey = AlbumArtExtractor.getAlbumKey(track)
+        if (albumKey != null) return albumKey
         return if (track.path.isNotBlank()) track.path else track.contentUri.toString()
     }
 
@@ -47,6 +49,13 @@ object ArtworkExtractor {
             val key = getCacheKey(track)
             if (key.isNotBlank() && negativeCache.contains(key)) return null
 
+            val cacheDir = File(context.cacheDir, "thumbnails")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+
+            val albumKey = AlbumArtExtractor.getAlbumKey(track)
+            val file = if (albumKey != null) File(cacheDir, "thumb_${albumKey}.jpg") else File(cacheDir, "thumb_${track.id}.jpg")
+            if (file.exists() && file.length() > 0) return Uri.fromFile(file)
+
             val bytes = extractArtworkBytes(context, track)
             if (bytes == null) {
                 if (key.isNotBlank()) negativeCache.add(key)
@@ -54,13 +63,16 @@ object ArtworkExtractor {
             }
             val bitmap = decodeSampledBitmapFromByteArray(bytes, 400) ?: return null
             
-            val cacheDir = File(context.cacheDir, "thumbnails")
-            if (!cacheDir.exists()) cacheDir.mkdirs()
-            
-            val file = File(cacheDir, "thumb_${track.id}.jpg")
             val fos = FileOutputStream(file)
             bitmap.compress(Bitmap.CompressFormat.JPEG, 85, fos)
             fos.close()
+
+            if (albumKey != null) {
+                val trackFile = File(cacheDir, "thumb_${track.id}.jpg")
+                try {
+                    if (!trackFile.exists()) file.copyTo(trackFile, overwrite = false)
+                } catch (_: Exception) {}
+            }
             
             return Uri.fromFile(file)
         } catch (e: Exception) {
@@ -575,7 +587,7 @@ object ArtworkExtractor {
         defaultColor: Color = MaterialTheme.colorScheme.primary
     ): Color {
         val context = LocalContext.current
-        val key = track?.let { if (it.album.isNotBlank()) "album_${it.album.lowercase().trim()}" else "track_${it.id}" } ?: ""
+        val key = track?.let { getCacheKey(it) } ?: ""
         val cached = remember(key) { if (key.isNotEmpty()) dominantColorCache[key] else null }
         val colorState = produceState(initialValue = cached ?: defaultColor, key1 = key) {
             if (cached == null && track != null) {

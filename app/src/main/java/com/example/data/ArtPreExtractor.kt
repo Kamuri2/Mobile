@@ -30,23 +30,23 @@ object ArtPreExtractor {
                 val artDir = File(context.cacheDir, "album_art_hd")
                 if (!artDir.exists()) artDir.mkdirs()
 
-                val seenAlbums = mutableSetOf<Long>()
+                val seenAlbums = mutableSetOf<String>()
 
                 // 1. If tracks provided, process them directly
                 if (!tracks.isNullOrEmpty()) {
                     for (track in tracks) {
-                        val albumKey = if (track.album.isNotBlank()) track.album.lowercase().trim().hashCode().toLong() else -1L
-                        val albumFile = if (albumKey != -1L) File(artDir, "album_$albumKey.jpg") else null
+                        val albumKey = AlbumArtExtractor.getAlbumKey(track)
+                        val albumFile = if (albumKey != null) File(artDir, "${albumKey}.jpg") else null
                         val trackFile = File(artDir, "track_${track.id}.jpg")
 
                         if ((albumFile != null && albumFile.exists() && albumFile.length() > 0) ||
                             (trackFile.exists() && trackFile.length() > 0)
                         ) {
-                            if (albumKey != -1L) seenAlbums.add(albumKey)
+                            if (albumKey != null) seenAlbums.add(albumKey)
                             continue
                         }
 
-                        if (albumKey != -1L && albumKey in seenAlbums) continue
+                        if (albumKey != null && albumKey in seenAlbums) continue
 
                         if (track.path.isNotBlank()) {
                             tryExtractFromPath(track.path, albumFile, trackFile, albumKey, seenAlbums)
@@ -85,19 +85,20 @@ object ArtPreExtractor {
 
                         if (dataPath.isNullOrBlank()) continue
 
-                        val albumFile = if (albumId > 0) File(artDir, "album_$albumId.jpg") else null
+                        val albumKey = if (albumId > 0) "album_mediastore_$albumId" else null
+                        val albumFile = if (albumKey != null) File(artDir, "${albumKey}.jpg") else null
                         val trackFile = File(artDir, "track_$trackId.jpg")
 
                         if ((albumFile != null && albumFile.exists() && albumFile.length() > 0) ||
                             (trackFile.exists() && trackFile.length() > 0)
                         ) {
-                            if (albumId > 0) seenAlbums.add(albumId)
+                            if (albumKey != null) seenAlbums.add(albumKey)
                             continue
                         }
 
-                        if (albumId > 0 && albumId in seenAlbums) continue
+                        if (albumKey != null && albumKey in seenAlbums) continue
 
-                        tryExtractFromPath(dataPath, albumFile, trackFile, albumId, seenAlbums)
+                        tryExtractFromPath(dataPath, albumFile, trackFile, albumKey, seenAlbums)
                     }
                 }
             } catch (e: Exception) {
@@ -112,8 +113,8 @@ object ArtPreExtractor {
         path: String,
         albumFile: File?,
         trackFile: File,
-        albumId: Long,
-        seenAlbums: MutableSet<Long>
+        albumKey: String?,
+        seenAlbums: MutableSet<String>
     ) {
         try {
             val audioFile = File(path)
@@ -127,7 +128,10 @@ object ArtPreExtractor {
                 val data = best.binaryData
                 if (albumFile != null) {
                     albumFile.writeBytes(data)
-                    seenAlbums.add(albumId)
+                    if (albumKey != null) {
+                        seenAlbums.add(albumKey)
+                        AlbumArtExtractor.linkArtworkToAlbum(albumKey, albumFile)
+                    }
                 }
                 trackFile.writeBytes(data)
             }

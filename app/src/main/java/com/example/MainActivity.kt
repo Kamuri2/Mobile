@@ -82,8 +82,10 @@ import coil.compose.AsyncImage
 import com.example.ui.components.TrackImage
 import com.example.data.AudioScanner
 
+import android.content.Context
 import com.example.data.UserRepository
 import com.example.data.SocialRepository
+import com.example.ui.components.OnboardingTourOverlay
 import com.example.ui.screens.SetupScreen
 import com.example.ui.screens.UserProfileScreen
 import androidx.compose.runtime.collectAsState
@@ -151,6 +153,9 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
     val socialRepository = remember { SocialRepository.getInstance(context) }
     val userProfile by userRepository.getUserProfile().collectAsState(initial = null)
     
+    val tourPrefs = remember { context.getSharedPreferences("app_guide_prefs", Context.MODE_PRIVATE) }
+    var showTour by remember { mutableStateOf(false) }
+
     var isCheckingUser by remember { mutableStateOf(true) }
     var needsSetup by remember { mutableStateOf(false) }
 
@@ -158,6 +163,11 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         val user = userRepository.getUserProfileSync()
         if (user == null || user.name.isBlank()) {
             needsSetup = true
+        } else {
+            val isTourCompleted = tourPrefs.getBoolean("guide_completed", false)
+            if (!isTourCompleted) {
+                showTour = true
+            }
         }
         isCheckingUser = false
     }
@@ -181,7 +191,10 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         SetupScreen(
             currentLanguage = appSettings.appLanguage,
             onLanguageChange = { playerManager.setAppLanguage(it) },
-            onComplete = { needsSetup = false }
+            onComplete = {
+                needsSetup = false
+                showTour = true
+            }
         )
         return@LiquidMusicTheme
     }
@@ -454,7 +467,11 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                         settings = appSettings,
                         onUpdateSettings = { playerManager.updateSettings(it) },
                         onBack = { currentScreen = NavigationScreen.HOME },
-                        onRescanAudio = { isForceRescan = true; permissionLauncher.launch(requiredPermissions) }
+                        onRescanAudio = { isForceRescan = true; permissionLauncher.launch(requiredPermissions) },
+                        onStartTour = {
+                            currentScreen = NavigationScreen.HOME
+                            showTour = true
+                        }
                     )
                     
                     NavigationScreen.PROFILE -> com.example.ui.screens.UserProfileScreen(
@@ -601,6 +618,15 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                 onSetPlayNext = { track -> playerManager.setPlayNext(track) },
                 onMoveInQueue = { from, to -> playerManager.moveInQueue(from, to) },
                 language = appSettings.appLanguage
+            )
+        }
+
+        if (showTour && !isPlayerExpanded) {
+            OnboardingTourOverlay(
+                language = appSettings.appLanguage,
+                isDarkMode = appSettings.isDarkMode,
+                primaryColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+                onTourFinished = { showTour = false }
             )
         }
     }

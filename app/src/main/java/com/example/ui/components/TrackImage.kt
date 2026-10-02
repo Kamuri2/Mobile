@@ -56,10 +56,14 @@ fun PlayerAlbumArt(
     val context = LocalContext.current
     val extractor = remember { AlbumArtExtractor(context) }
 
-    // 1. Revisión síncrona inmediata en caché de disco (0 ms de latencia) para ESTA pista
-    val initialFile = remember(track.id) { extractor.getExistingArtFile(track) }
+    val albumKey = remember(track.id, track.album, track.artist) {
+        AlbumArtExtractor.getAlbumKey(track) ?: "track_${track.id}"
+    }
 
-    val artFile by produceState<File?>(initialValue = initialFile, key1 = track.id) {
+    // 1. Revisión síncrona inmediata en caché de memoria/disco (0 ms de latencia) para el álbum
+    val initialFile = remember(albumKey) { extractor.getExistingArtFile(track) }
+
+    val artFile by produceState<File?>(initialValue = initialFile, key1 = albumKey) {
         value = initialFile
         if (value == null) {
             value = withContext(Dispatchers.IO) {
@@ -171,8 +175,11 @@ fun TrackImage(
 ) {
     val context = LocalContext.current
     val extractor = remember { AlbumArtExtractor(context) }
-    val initialFile = remember(track.id) { extractor.getExistingArtFile(track) }
-    val artFile by produceState<File?>(initialValue = initialFile, key1 = track.id) {
+    val albumKey = remember(track.id, track.album, track.artist) {
+        AlbumArtExtractor.getAlbumKey(track) ?: "track_${track.id}"
+    }
+    val initialFile = remember(albumKey) { extractor.getExistingArtFile(track) }
+    val artFile by produceState<File?>(initialValue = initialFile, key1 = albumKey) {
         value = initialFile
         if (value == null) {
             value = withContext(Dispatchers.IO) {

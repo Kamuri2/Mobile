@@ -82,10 +82,18 @@ object TrackRepository {
 
                 if (tracksToEnrich.isNotEmpty()) {
                     scope.launch {
+                        val albumUriMap = mutableMapOf<String, android.net.Uri?>()
                         for (track in tracksToEnrich) {
                             try {
                                 var enriched = MetadataReader.extractFullMetadata(context, track)
-                                val thumbUri = ArtworkExtractor.saveArtworkToInternalCache(context, enriched)
+                                val albumKey = AlbumArtExtractor.getAlbumKey(enriched)
+                                val thumbUri = if (albumKey != null && albumUriMap.containsKey(albumKey)) {
+                                    albumUriMap[albumKey]
+                                } else {
+                                    val uri = ArtworkExtractor.saveArtworkToInternalCache(context, enriched)
+                                    if (albumKey != null) albumUriMap[albumKey] = uri
+                                    uri
+                                }
                                 if (thumbUri != null) {
                                     enriched = enriched.copy(albumArtUri = thumbUri)
                                 }

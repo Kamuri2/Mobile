@@ -100,7 +100,27 @@ object Translations {
         "equalizer" to "Equalizer",
         "presets" to "Presets",
         "bass_boost" to "Bass Boost",
-        "virtualizer" to "3D Virtualizer"
+        "virtualizer" to "3D Virtualizer",
+
+        // Tour & Onboarding
+        "tour_step" to "Step %d of 5",
+        "tour_skip" to "Skip",
+        "tour_prev" to "Back",
+        "tour_next" to "Next",
+        "tour_finish" to "Start listening!",
+        "tour_step1_title" to "Welcome to Fuzion Player!",
+        "tour_step1_desc" to "Your favorite songs, recommended albums, and quick shortcuts gathered in a sleek, responsive interface.",
+        "tour_step2_title" to "Explore your Library",
+        "tour_step2_desc" to "Easily browse Tracks, Local folders, Albums, Artists, and Playlists using the bottom navigation bar.",
+        "tour_step3_title" to "Mini-Player & Gestures",
+        "tour_step3_desc" to "Tap the bar to open the full-screen player. To minimize it smoothly, simply swipe down on the cover or screen.",
+        "tour_step4_title" to "Profile & Settings",
+        "tour_step4_desc" to "Access your profile and settings at the top: toggle OLED dark mode, tune the Liquid Equalizer, switch language, and rescan audio.",
+        "tour_step5_title" to "All Set to Enjoy!",
+        "tour_step5_desc" to "Your player is configured and ready with high-fidelity audio playback. Enjoy your music!",
+        "quick_guide_title" to "Quick Start Guide",
+        "quick_guide_subtitle" to "Learn navigation, features, and player gestures",
+        "start_tour" to "Start interactive tutorial"
     )
 
     val es = mapOf(
@@ -202,7 +222,27 @@ object Translations {
         "equalizer" to "Ecualizador",
         "presets" to "Ajustes Preestablecidos",
         "bass_boost" to "Refuerzo de Graves",
-        "virtualizer" to "Efecto Envolvente 3D"
+        "virtualizer" to "Efecto Envolvente 3D",
+
+        // Tour & Onboarding
+        "tour_step" to "Paso %d de 5",
+        "tour_skip" to "Saltar",
+        "tour_prev" to "Anterior",
+        "tour_next" to "Siguiente",
+        "tour_finish" to "¡Empezar a escuchar!",
+        "tour_step1_title" to "¡Bienvenido a Fuzion Player!",
+        "tour_step1_desc" to "Tus canciones favoritas, álbumes recomendados y accesos rápidos reunidos en una interfaz moderna y fluida.",
+        "tour_step2_title" to "Navega tu Biblioteca",
+        "tour_step2_desc" to "Explora cómodamente entre Canciones, Carpetas locales, Álbumes, Artistas y Listas desde la barra inferior.",
+        "tour_step3_title" to "Mini-Reproductor y Gestos",
+        "tour_step3_desc" to "Toca la barra para abrir el reproductor a pantalla completa. Para minimizarlo, simplemente desliza la carátula o pantalla hacia abajo con suavidad.",
+        "tour_step4_title" to "Ajustes y Personalización",
+        "tour_step4_desc" to "En la parte superior accede a tu Perfil y Ajustes: cambia el tema OLED, ajusta el Ecualizador Líquido, idioma y escanea nueva música.",
+        "tour_step5_title" to "¡Todo Listo para Escuchar!",
+        "tour_step5_desc" to "Tu reproductor está configurado y optimizado con sonido de máxima fidelidad. ¡Disfruta de la mejor experiencia musical!",
+        "quick_guide_title" to "Guía de Inicio Rápido",
+        "quick_guide_subtitle" to "Aprende a usar la navegación y gestos del reproductor",
+        "start_tour" to "Ver tutorial interactivo"
     )
 
     val fr = mapOf(
@@ -726,5 +766,18 @@ object Translations {
             else -> en
         }
         return map[key] ?: en[key] ?: key
+    }
+
+    fun get(lang: String, key: String, default: String): String {
+        val map = when (lang.trim().lowercase()) {
+            "spanish", "español", "es" -> es
+            "french", "français", "fr" -> fr
+            "german", "deutsch", "de" -> de
+            "italian", "italiano", "it" -> it
+            "portuguese", "português", "pt" -> pt
+            "japanese", "日本語", "ja" -> ja
+            else -> en
+        }
+        return map[key] ?: en[key] ?: default
     }
 }
