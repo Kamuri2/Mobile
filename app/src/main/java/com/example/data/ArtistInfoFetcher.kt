@@ -44,7 +44,18 @@ object ArtistInfoFetcher {
             p.all.forEach { (key, value) ->
                 if (value is String) {
                     fromJson(value)?.let { info ->
-                        cache[key] = info
+                        if (key.contains("_")) {
+                            val artistPart = key.substringBefore("_").trim()
+                            if (!info.imageUrl.isNullOrBlank() || (info.origin.isNotBlank() && info.origin != "Unknown")) {
+                                if (cache[artistPart] == null || cache[artistPart]?.imageUrl.isNullOrBlank()) {
+                                    cache[artistPart] = info
+                                    cache[artistPart.lowercase()] = info
+                                }
+                            }
+                            p.edit().remove(key).apply()
+                        } else {
+                            cache[key] = info
+                        }
                     }
                 }
             }
@@ -126,10 +137,11 @@ object ArtistInfoFetcher {
     }
 
     suspend fun fetchArtistInfo(rawArtistName: String, trackTitle: String? = null): ArtistInfo = withContext(Dispatchers.IO) {
-        val cleanKey = (rawArtistName + "_" + (trackTitle ?: "")).trim()
-        val cached = getCachedArtistInfo(rawArtistName)
-        if (cache.containsKey(cleanKey)) {
-            return@withContext cache[cleanKey]!!
+        val cleanArtist = rawArtistName.trim()
+        val cached = getCachedArtistInfo(cleanArtist)
+        // If we already have rich artist info (with photo or verified country), return it immediately!
+        if (cached != null && (!cached.imageUrl.isNullOrBlank() || (cached.origin.isNotBlank() && cached.origin != "Unknown"))) {
+            return@withContext cached
         }
 
         var artistName = rawArtistName.trim()
@@ -162,7 +174,7 @@ object ArtistInfoFetcher {
                 listeners = "",
                 origin = ""
             )
-            saveArtistInfo(cleanKey, emptyInfo)
+            saveArtistInfo(artistName, emptyInfo)
             saveArtistInfo(rawArtistName, emptyInfo)
             return@withContext emptyInfo
         }
@@ -323,7 +335,6 @@ object ArtistInfoFetcher {
             appleMusic = appleMusic,
             deezer = deezer
         )
-        saveArtistInfo(cleanKey, info)
         saveArtistInfo(artistName, info)
         saveArtistInfo(canonicalArtistName, info)
         saveArtistInfo(rawArtistName, info)

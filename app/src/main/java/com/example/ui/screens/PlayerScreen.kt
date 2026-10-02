@@ -187,12 +187,10 @@ fun PlayerScreen(
             try {
                 swipeOffsetY.animateTo(
                     targetValue = screenHeightPx,
-                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                    animationSpec = tween(200, easing = FastOutSlowInEasing)
                 )
             } catch (_: Exception) {}
             onBack()
-            swipeOffsetY.snapTo(0f)
-            isClosingByGesture = false
         }
     }
 
@@ -232,7 +230,7 @@ fun PlayerScreen(
             if (cached != null) {
                 artistInfo = cached
             }
-            val fetched = com.example.data.ArtistInfoFetcher.fetchArtistInfo(track.artist, track.title)
+            val fetched = com.example.data.ArtistInfoFetcher.fetchArtistInfo(track.artist)
             artistInfo = fetched
         }
     }
@@ -712,56 +710,46 @@ fun PlayerScreen(
                 val screenHeightPx = with(density) { totalScreenHeight.toPx() }
                 val dismissThresholdPx = with(density) { 95.dp.toPx() }
 
-                val nestedScrollConnection = remember(screenHeightPx, dismissThresholdPx) {
-                    object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
-                        override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                            if (available.y < 0 && swipeOffsetY.value > 0f) {
-                                val newOffset = (swipeOffsetY.value + available.y).coerceAtLeast(0f)
-                                val consumedY = newOffset - swipeOffsetY.value
-                                coroutineScope.launch { swipeOffsetY.snapTo(newOffset) }
-                                return androidx.compose.ui.geometry.Offset(0f, consumedY)
-                            }
-                            return androidx.compose.ui.geometry.Offset.Zero
-                        }
-
-                        override fun onPostScroll(consumed: androidx.compose.ui.geometry.Offset, available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                            if (available.y > 0 && portraitScrollState.value == 0 && !showLyricsMode) {
-                                val newOffset = (swipeOffsetY.value + available.y).coerceAtLeast(0f)
-                                coroutineScope.launch { 
-                                    swipeOffsetY.snapTo(newOffset)
-                                }
-                                return androidx.compose.ui.geometry.Offset(0f, available.y)
-                            }
-                            return androidx.compose.ui.geometry.Offset.Zero
-                        }
-
-                        override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
-                            if (swipeOffsetY.value > 0f) {
-                                if (available.y > 150f || swipeOffsetY.value > dismissThresholdPx) {
-                                    triggerDismissDown()
-                                } else {
-                                    swipeOffsetY.animateTo(
-                                        targetValue = 0f,
-                                        animationSpec = tween(180)
-                                    )
-                                }
-                                return available
-                            }
-                            return androidx.compose.ui.unit.Velocity.Zero
-                        }
-                    }
-                }
-
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .nestedScroll(nestedScrollConnection)
                         .verticalScroll(portraitScrollState),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            .pointerInput(screenHeightPx, dismissThresholdPx) {
+                                detectVerticalDragGestures(
+                                    onDragEnd = {
+                                        if (swipeOffsetY.value > dismissThresholdPx) {
+                                            triggerDismissDown()
+                                        } else {
+                                            coroutineScope.launch {
+                                                swipeOffsetY.animateTo(0f, animationSpec = tween(180))
+                                            }
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        if (swipeOffsetY.value > dismissThresholdPx) {
+                                            triggerDismissDown()
+                                        } else {
+                                            coroutineScope.launch {
+                                                swipeOffsetY.animateTo(0f, animationSpec = tween(180))
+                                            }
+                                        }
+                                    },
+                                    onVerticalDrag = { change, dragAmount ->
+                                        if (dragAmount > 0 || swipeOffsetY.value > 0f) {
+                                            change.consume()
+                                            coroutineScope.launch {
+                                                val newOffset = (swipeOffsetY.value + dragAmount).coerceAtLeast(0f)
+                                                swipeOffsetY.snapTo(newOffset)
+                                            }
+                                        }
+                                    }
+                                )
+                            },
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         // Top Header with Swipe Down Handle
@@ -769,40 +757,6 @@ fun PlayerScreen(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .pointerInput(screenHeightPx, dismissThresholdPx) {
-                                    detectVerticalDragGestures(
-                                        onDragEnd = {
-                                            if (swipeOffsetY.value > dismissThresholdPx) {
-                                                triggerDismissDown()
-                                            } else {
-                                                coroutineScope.launch {
-                                                    swipeOffsetY.animateTo(0f, animationSpec = tween(180))
-                                                }
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            if (swipeOffsetY.value > dismissThresholdPx) {
-                                                triggerDismissDown()
-                                            } else {
-                                                coroutineScope.launch {
-                                                    swipeOffsetY.animateTo(0f, animationSpec = tween(180))
-                                                }
-                                            }
-                                        },
-                                        onVerticalDrag = { change, dragAmount ->
-                                            if (dragAmount > 0 || swipeOffsetY.value > 0f) {
-                                                change.consume()
-                                                coroutineScope.launch {
-                                                    val newOffset = (swipeOffsetY.value + dragAmount).coerceAtLeast(0f)
-                                                    swipeOffsetY.snapTo(newOffset)
-                                                    if (newOffset > dismissThresholdPx * 2.2f) {
-                                                        triggerDismissDown()
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    )
-                                }
                                 .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 2.dp)
                         ) {
                             Box(

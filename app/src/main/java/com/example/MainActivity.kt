@@ -543,10 +543,7 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                 initialOffsetY = { it },
                 animationSpec = tween(240, easing = FastOutSlowInEasing)
             ) + fadeIn(animationSpec = tween(180)),
-            exit = slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(220, easing = FastOutSlowInEasing)
-            ) + fadeOut(animationSpec = tween(150)),
+            exit = fadeOut(animationSpec = tween(150)),
             modifier = Modifier.fillMaxSize()
         ) {
             PlayerScreen(
