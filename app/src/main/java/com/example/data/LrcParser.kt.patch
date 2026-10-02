@@ -1,0 +1,26 @@
+--- app/src/main/java/com/example/data/LrcParser.kt
++++ app/src/main/java/com/example/data/LrcParser.kt
+@@ -19,7 +19,8 @@
+         lrcContent.lines().forEach { rawLine ->
+             val line = rawLine.trim()
+-            if (line.isBlank() || metaTagRegex.matches(line)) return@forEach
++            if (line.isBlank()) return@forEach
++            if (line.startsWith("[ti:") || line.startsWith("[ar:") || line.startsWith("[al:") || line.startsWith("[by:") || line.startsWith("[offset:")) return@forEach
+             
+             val matches = timeTagRegex.findAll(line).toList()
+             if (matches.isNotEmpty()) {
+@@ -51,13 +52,6 @@
+     fun getCurrentLineIndex(lines: List<LrcLine>, positionMs: Long): Int {
+         if (lines.isEmpty()) return -1
+-        var activeIndex = -1
+-        for (i in lines.indices) {
+-            if (positionMs >= lines[i].timeMs) {
+-                activeIndex = i
+-            } else {
+-                break
+-            }
+-        }
+-        return activeIndex
++        return lines.indexOfLast { it.timeMs <= positionMs }
+     }
+ }
