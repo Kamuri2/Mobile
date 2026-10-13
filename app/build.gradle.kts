@@ -79,6 +79,7 @@ dependencies {
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.appcompat)
   implementation("net.jthink:jaudiotagger:3.0.1")
   implementation(platform(libs.androidx.compose.bom))
   implementation(platform(libs.firebase.bom))

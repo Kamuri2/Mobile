@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.example.R
 
 class PlaybackService : Service() {
@@ -80,19 +81,25 @@ class PlaybackService : Service() {
             .putString(MediaMetadata.METADATA_KEY_ALBUM, track.album)
             .putLong(MediaMetadata.METADATA_KEY_DURATION, track.durationMs)
 
-        if (lastTrackForImage != track.id) {
+        track.albumArtUri?.let { uri ->
+            metadataBuilder.putString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, uri.toString())
+            metadataBuilder.putString(MediaMetadata.METADATA_KEY_ART_URI, uri.toString())
+            metadataBuilder.putString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI, uri.toString())
+        }
+
+        if (lastTrackForImage != track.id || lastLoadedBitmap == null) {
             lastTrackForImage = track.id
             // Check cache synchronously first
             val cached = ArtworkExtractor.getCachedBitmap(track)
-            lastLoadedBitmap = cached
-
-            if (cached == null) {
+            if (cached != null) {
+                lastLoadedBitmap = cached
+            } else {
                 scope.launch(Dispatchers.IO) {
-                    val albumArtBitmap = ArtworkExtractor.loadArtworkBitmap(applicationContext, track, targetDim = 512)
+                    val albumArtBitmap = ArtworkExtractor.loadArtworkBitmap(applicationContext, track, targetDim = 320)
                     if (albumArtBitmap != null) {
                         lastLoadedBitmap = albumArtBitmap
-                        scope.launch(Dispatchers.Main) {
-                            if (lastTrackForImage == track.id) {
+                        withContext(Dispatchers.Main) {
+                            if (playerManager.currentTrack.value?.id == track.id) {
                                 updateNotificationAndSession() // trigger rebuild with image
                             }
                         }
@@ -104,6 +111,7 @@ class PlaybackService : Service() {
         if (lastLoadedBitmap != null) {
             metadataBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, lastLoadedBitmap)
             metadataBuilder.putBitmap(MediaMetadata.METADATA_KEY_ART, lastLoadedBitmap)
+            metadataBuilder.putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, lastLoadedBitmap)
         }
         mediaSession.setMetadata(metadataBuilder.build())
 
@@ -168,7 +176,7 @@ class PlaybackService : Service() {
             "NEXT" -> playerManager.nextTrack()
             "PREV" -> playerManager.previousTrack()
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun createNotificationChannel() {
@@ -183,7 +191,12 @@ class PlaybackService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        mediaSession.release()
-        playerManager.release()
+        try {
+            mediaSession.release()
+        } catch (_: Exception) {}
+        // NOTE: We MUST NOT call playerManager.release() here!
+        // AudioPlayerManager is an application-level singleton. Calling release() destroys
+        // the player's CoroutineScope and internal players whenever the system temporarily
+        // stops or recreates the foreground service, causing audio silence and playback pausing.
     }
 }

@@ -16,4 +16,10 @@ interface LyricsDao {
 
     @Query("DELETE FROM lyrics WHERE audioPath = :path")
     suspend fun deleteByPath(path: String)
+
+    @Query("SELECT * FROM lyrics")
+    suspend fun getAll(): List<LyricsEntry>
+
+    @Query("DELETE FROM lyrics")
+    suspend fun clearAll()
 }

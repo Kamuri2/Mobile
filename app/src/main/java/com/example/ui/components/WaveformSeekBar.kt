@@ -120,7 +120,7 @@ fun WaveformSeekBar(
                 wavePath.moveTo(0f, centerY)
 
                 val phase = if (isPlaying) animPhase else 0f
-                val stepPx = 2.dp.toPx()
+                val stepPx = 4.dp.toPx()
                 var x = 0f
 
                 while (x <= playheadX) {

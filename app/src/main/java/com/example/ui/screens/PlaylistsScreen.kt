@@ -63,9 +63,9 @@ fun PlaylistsScreen(
     val userProfile by userRepository.getUserProfile().collectAsState(initial = null)
 
     val isDarkMode = settings.isDarkMode
-    val textPrimary = if (isDarkMode) Color.White else Color(0xFF111111)
+    val textPrimary = if (isDarkMode) Color.White else Color.Black
     val textSecondary = if (isDarkMode) Color(0xB3FFFFFF) else Color(0xFF555555)
-    val iconTint = if (isDarkMode) Color.White else Color(0xFF1E1E1E)
+    val iconTint = if (isDarkMode) Color.White else Color.Black
     val cardBg = if (isDarkMode) Color(0x1AFFFFFF) else Color(0x0C000000)
     val dialogBg = if (isDarkMode) Color(0xFF202020) else Color.White
 
@@ -75,6 +75,7 @@ fun PlaylistsScreen(
 
     var selectedPlaylistName by remember { mutableStateOf<String?>(initialPlaylistName) }
     var selectedPlaylistId by remember { mutableStateOf<Long?>(null) }
+    var activePlaylistDesc by remember { mutableStateOf<String?>(null) }
 
     // For editing playlist
     var editPlaylistTarget by remember { mutableStateOf<PlaylistEntity?>(null) }
@@ -128,7 +129,7 @@ fun PlaylistsScreen(
     }
 
     LaunchedEffect(selectedPlaylistName, playlists) {
-        if (selectedPlaylistName != null && selectedPlaylistName != "Mis Favoritas" && selectedPlaylistName != "All Songs") {
+        if (selectedPlaylistName != null && selectedPlaylistName != "Favorites" && selectedPlaylistName != "Mis Favoritas" && selectedPlaylistName != "All Songs") {
             val p = playlists.find { it.name == selectedPlaylistName || it.playlistId == selectedPlaylistId }
             if (p != null) {
                 selectedPlaylistId = p.playlistId
@@ -167,8 +168,8 @@ fun PlaylistsScreen(
             onDismissRequest = { editPlaylistTarget = null },
             title = {
                 Text(
-                    text = "Editar Playlist",
-                    color = Color.White,
+                    text = com.example.ui.Translations.get(settings.appLanguage, "edit_playlist"),
+                    color = textPrimary,
                     fontWeight = FontWeight.Bold,
                     fontSize = 20.sp
                 )
@@ -183,7 +184,7 @@ fun PlaylistsScreen(
                         modifier = Modifier
                             .size(130.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF282828))
+                            .background(if (isDarkMode) Color(0xFF282828) else Color(0xFFE5E5EA))
                             .clickable {
                                 pendingPhotoTarget = currentEdit.playlistId.toString()
                                 imagePicker.launch("image/*")
@@ -202,7 +203,7 @@ fun PlaylistsScreen(
                             Icon(
                                 imageVector = Icons.Default.MusicNote,
                                 contentDescription = null,
-                                tint = Color.Gray,
+                                tint = if (isDarkMode) Color.Gray else Color(0xFF888888),
                                 modifier = Modifier.size(48.dp)
                             )
                         }
@@ -213,9 +214,9 @@ fun PlaylistsScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = "Cambiar imagen", tint = Color.White)
+                                Icon(Icons.Default.PhotoCamera, contentDescription = com.example.ui.Translations.get(settings.appLanguage, "change_photo"), tint = Color.White)
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text("Cambiar foto", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                Text(com.example.ui.Translations.get(settings.appLanguage, "change_photo"), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium)
                             }
                         }
                     }
@@ -225,12 +226,12 @@ fun PlaylistsScreen(
                     OutlinedTextField(
                         value = editName,
                         onValueChange = { editName = it },
-                        label = { Text("Nombre de la playlist") },
+                        label = { Text(com.example.ui.Translations.get(settings.appLanguage, "playlist_name_label")) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
+                            focusedTextColor = textPrimary,
+                            unfocusedTextColor = textPrimary,
                             focusedBorderColor = MaterialTheme.colorScheme.primary,
                             focusedLabelColor = MaterialTheme.colorScheme.primary
                         )
@@ -241,12 +242,12 @@ fun PlaylistsScreen(
                     OutlinedTextField(
                         value = editDesc,
                         onValueChange = { editDesc = it },
-                        label = { Text("Descripción (opcional)") },
+                        label = { Text(com.example.ui.Translations.get(settings.appLanguage, "description_optional")) },
                         maxLines = 3,
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
+                            focusedTextColor = textPrimary,
+                            unfocusedTextColor = textPrimary,
                             focusedBorderColor = MaterialTheme.colorScheme.primary,
                             focusedLabelColor = MaterialTheme.colorScheme.primary
                         )
@@ -262,6 +263,7 @@ fun PlaylistsScreen(
                                 socialRepository.updatePlaylist(updated)
                                 if (selectedPlaylistId == updated.playlistId) {
                                     selectedPlaylistName = updated.name
+                                    activePlaylistDesc = updated.description
                                 }
                                 editPlaylistTarget = null
                             }
@@ -269,15 +271,15 @@ fun PlaylistsScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                 ) {
-                    Text("Guardar", color = Color.Black, fontWeight = FontWeight.Bold)
+                    Text(com.example.ui.Translations.get(settings.appLanguage, "save"), color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editPlaylistTarget = null }) {
-                    Text("Cancelar", color = Color.LightGray)
+                    Text(com.example.ui.Translations.get(settings.appLanguage, "cancel"), color = if (isDarkMode) Color.LightGray else Color.Gray)
                 }
             },
-            containerColor = Color(0xFF222222)
+            containerColor = dialogBg
         )
     }
 
@@ -302,7 +304,7 @@ fun PlaylistsScreen(
 
         ModalBottomSheet(
             onDismissRequest = { showAddSongsSheetForPlaylist = null },
-            containerColor = Color(0xFF161616)
+            containerColor = if (isDarkMode) Color(0xFF161616) else Color(0xFFF9F9F9)
         ) {
             Column(
                 modifier = Modifier
@@ -310,23 +312,24 @@ fun PlaylistsScreen(
                     .padding(horizontal = 20.dp, vertical = 10.dp)
             ) {
                 Text(
-                    text = "Agregar canciones a la playlist",
+                    text = com.example.ui.Translations.get(settings.appLanguage, "add_songs_to"),
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = textPrimary
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Buscar canción o artista...", color = Color.Gray) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
+                    placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "search_song_artist"), color = if (isDarkMode) Color.Gray else Color(0xFF888888)) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = if (isDarkMode) Color.Gray else Color(0xFF888888)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                        focusedTextColor = textPrimary,
+                        unfocusedTextColor = textPrimary,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000)
                     )
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -343,7 +346,7 @@ fun PlaylistsScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(if (isAlreadyIn) Color(0x221DB954) else Color(0x14FFFFFF))
+                                .background(if (isAlreadyIn) Color(0x221DB954) else if (isDarkMode) Color(0x14FFFFFF) else Color(0x0C000000))
                                 .clickable {
                                     coroutineScope.launch {
                                         if (isAlreadyIn) {
@@ -369,14 +372,14 @@ fun PlaylistsScreen(
                                     text = track.title,
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color.White,
+                                    color = textPrimary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = track.artist,
                                     fontSize = 12.sp,
-                                    color = GlassTextSecondary,
+                                    color = textSecondary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -393,7 +396,7 @@ fun PlaylistsScreen(
                                 Icon(
                                     imageVector = if (isAlreadyIn) Icons.Default.Check else Icons.Default.Add,
                                     contentDescription = if (isAlreadyIn) "Remove" else "Add",
-                                    tint = if (isAlreadyIn) MaterialTheme.colorScheme.primary else Color.White
+                                    tint = if (isAlreadyIn) MaterialTheme.colorScheme.primary else textPrimary
                                 )
                             }
                         }
@@ -406,8 +409,8 @@ fun PlaylistsScreen(
 
     if (selectedPlaylistName != null) {
         // DETAILED SPOTIFY-LIKE PLAYLIST SCREEN (Screenshot 4 style)
-        val isFavorites = selectedPlaylistName == "Mis Favoritas"
-        val isAllSongs = selectedPlaylistName == "All Songs"
+        val isFavorites = selectedPlaylistName == "Mis Favoritas" || selectedPlaylistName == "Favorites" || selectedPlaylistName == com.example.ui.Translations.get(settings.appLanguage, "favorite_songs")
+        val isAllSongs = selectedPlaylistName == "All Songs" || selectedPlaylistName == com.example.ui.Translations.get(settings.appLanguage, "all_tracks")
         val currentPlaylistEntity = playlists.find { it.playlistId == selectedPlaylistId || it.name == selectedPlaylistName }
 
         val tracks = if (isFavorites) {
@@ -432,13 +435,15 @@ fun PlaylistsScreen(
         SpotifyStylePlaylistDetail(
             playlistName = when {
                 isFavorites -> com.example.ui.Translations.get(settings.appLanguage, "favorite_songs")
-                isAllSongs -> "All Songs"
+                isAllSongs -> com.example.ui.Translations.get(settings.appLanguage, "all_tracks")
                 else -> currentPlaylistEntity?.name ?: selectedPlaylistName!!
             },
             description = when {
-                isFavorites -> "Tus canciones favoritas marcadas con me gusta"
-                isAllSongs -> "Biblioteca completa de música"
-                else -> currentPlaylistEntity?.description ?: ""
+                isFavorites -> com.example.ui.Translations.get(settings.appLanguage, "favorites_desc")
+                isAllSongs -> com.example.ui.Translations.get(settings.appLanguage, "all_songs_desc")
+                else -> currentPlaylistEntity?.description?.takeIf { it.isNotBlank() }
+                    ?: activePlaylistDesc?.takeIf { it.isNotBlank() }
+                    ?: ""
             },
             imageUri = when {
                 isFavorites -> favoritesCoverUri
@@ -447,9 +452,11 @@ fun PlaylistsScreen(
             },
             isFavorites = isFavorites,
             isAllSongs = isAllSongs,
-            creatorName = userProfile?.name ?: "Usuario",
+            creatorName = userProfile?.name ?: com.example.ui.Translations.get(settings.appLanguage, "user_default_name"),
             creatorImageUri = userProfile?.profileImageUri,
             tracks = tracks,
+            isDarkMode = isDarkMode,
+            language = settings.appLanguage,
             onBack = {
                 if (onDismissOverlay != null) {
                     onDismissOverlay()
@@ -554,55 +561,66 @@ fun PlaylistsScreen(
                         .fillMaxWidth()
                         .padding(vertical = 12.dp),
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF))
+                    colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0x1AFFFFFF) else Color(0xFFF2F2F7))
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
                             com.example.ui.Translations.get(settings.appLanguage, "new_playlist"),
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
-                            color = Color.White
+                            color = textPrimary
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         OutlinedTextField(
                             value = newPlaylistName,
                             onValueChange = { newPlaylistName = it },
-                            placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "list_name"), color = Color.Gray) },
+                            placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "list_name"), color = if (isDarkMode) Color.Gray else Color(0xFF888888)) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = MaterialTheme.colorScheme.primary
+                                focusedTextColor = textPrimary,
+                                unfocusedTextColor = textPrimary,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000)
                             )
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = newPlaylistDesc,
                             onValueChange = { newPlaylistDesc = it },
-                            placeholder = { Text("Descripción opcional...", color = Color.Gray) },
+                            placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "description_placeholder"), color = if (isDarkMode) Color.Gray else Color(0xFF888888)) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = MaterialTheme.colorScheme.primary
+                                focusedTextColor = textPrimary,
+                                unfocusedTextColor = textPrimary,
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x33000000)
                             )
                         )
                         Spacer(modifier = Modifier.height(14.dp))
                         Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-                            Button(onClick = { showCreateDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
-                                Text(com.example.ui.Translations.get(settings.appLanguage, "cancel"), color = Color.White)
+                            Button(
+                                onClick = { showCreateDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (isDarkMode) Color.DarkGray else Color(0xFFE0E0E0))
+                            ) {
+                                Text(com.example.ui.Translations.get(settings.appLanguage, "cancel"), color = textPrimary)
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
                                 onClick = {
                                     if (newPlaylistName.isNotBlank()) {
+                                        val trimmedName = newPlaylistName.trim()
+                                        val trimmedDesc = newPlaylistDesc.trim().ifEmpty { null }
                                         coroutineScope.launch {
-                                            socialRepository.createPlaylist(
-                                                name = newPlaylistName.trim(),
-                                                description = newPlaylistDesc.trim().ifEmpty { null }
+                                            val newId = socialRepository.createPlaylist(
+                                                name = trimmedName,
+                                                description = trimmedDesc
                                             )
+                                            // Automatically open the new playlist detail to show its name & description
+                                            selectedPlaylistId = newId
+                                            selectedPlaylistName = trimmedName
+                                            activePlaylistDesc = trimmedDesc
                                         }
                                         newPlaylistName = ""
                                         newPlaylistDesc = ""
@@ -627,10 +645,11 @@ fun PlaylistsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                selectedPlaylistName = "Mis Favoritas"
+                                selectedPlaylistName = "Favorites"
+                                activePlaylistDesc = com.example.ui.Translations.get(settings.appLanguage, "favorites_desc")
                             },
                         shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1510))
+                        colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF2A1510) else Color(0xFFFFEBEE))
                     ) {
                         Row(
                             modifier = Modifier
@@ -678,16 +697,25 @@ fun PlaylistsScreen(
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(com.example.ui.Translations.get(settings.appLanguage, "favorite_songs"), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                Text("${favoriteTracks.size} " + com.example.ui.Translations.get(settings.appLanguage, "songs_marked"), fontSize = 13.sp, color = GlassTextSecondary)
+                                Text(
+                                    com.example.ui.Translations.get(settings.appLanguage, "favorite_songs"),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDarkMode) Color.White else Color(0xFFB71C1C)
+                                )
+                                Text(
+                                    "${favoriteTracks.size} " + com.example.ui.Translations.get(settings.appLanguage, "songs_marked"),
+                                    fontSize = 13.sp,
+                                    color = if (isDarkMode) GlassTextSecondary else Color(0xFF757575)
+                                )
                             }
                             IconButton(onClick = {
                                 pendingPhotoTarget = "favorites"
                                 imagePicker.launch("image/*")
                             }) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = "Cambiar foto", tint = Color.White.copy(alpha = 0.75f))
+                                Icon(Icons.Default.PhotoCamera, contentDescription = com.example.ui.Translations.get(settings.appLanguage, "change_photo"), tint = if (isDarkMode) Color.White.copy(alpha = 0.75f) else Color.Black.copy(alpha = 0.6f))
                             }
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = GlassTextSecondary)
+                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = if (isDarkMode) GlassTextSecondary else Color(0xFF757575))
                         }
                     }
                 }
@@ -699,9 +727,10 @@ fun PlaylistsScreen(
                             .fillMaxWidth()
                             .clickable {
                                 selectedPlaylistName = "All Songs"
+                                activePlaylistDesc = com.example.ui.Translations.get(settings.appLanguage, "all_songs_desc")
                             },
                         shape = RoundedCornerShape(20.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E3A5F))
+                        colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF1E3A5F) else Color(0xFFE3F2FD))
                     ) {
                         Row(
                             modifier = Modifier
@@ -749,16 +778,25 @@ fun PlaylistsScreen(
                             }
                             Spacer(modifier = Modifier.width(16.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("All Songs", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                                Text("${allTracks.size} songs", fontSize = 13.sp, color = GlassTextSecondary)
+                                Text(
+                                    com.example.ui.Translations.get(settings.appLanguage, "all_tracks"),
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDarkMode) Color.White else Color(0xFF0D47A1)
+                                )
+                                Text(
+                                    "${allTracks.size} " + com.example.ui.Translations.get(settings.appLanguage, "songs"),
+                                    fontSize = 13.sp,
+                                    color = if (isDarkMode) textSecondary else Color(0xFF555555)
+                                )
                             }
                             IconButton(onClick = {
                                 pendingPhotoTarget = "all_songs"
                                 imagePicker.launch("image/*")
                             }) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = "Cambiar foto", tint = Color.White.copy(alpha = 0.75f))
+                                Icon(Icons.Default.PhotoCamera, contentDescription = com.example.ui.Translations.get(settings.appLanguage, "change_photo"), tint = if (isDarkMode) Color.White.copy(alpha = 0.75f) else Color.Black.copy(alpha = 0.6f))
                             }
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = GlassTextSecondary)
+                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = if (isDarkMode) GlassTextSecondary else Color(0xFF757575))
                         }
                     }
                 }
@@ -776,10 +814,11 @@ fun PlaylistsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0x1AFFFFFF))
+                            .background(if (isDarkMode) Color(0x1AFFFFFF) else Color(0x0C000000))
                             .clickable {
                                 selectedPlaylistName = playlist.name
                                 selectedPlaylistId = playlist.playlistId
+                                activePlaylistDesc = playlist.description
                             }
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -788,7 +827,7 @@ fun PlaylistsScreen(
                             modifier = Modifier
                                 .size(64.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF222222))
+                                .background(if (isDarkMode) Color(0xFF222222) else Color(0xFFE5E5EA))
                                 .clickable {
                                     pendingPhotoTarget = playlist.playlistId.toString()
                                     imagePicker.launch("image/*")
@@ -803,7 +842,12 @@ fun PlaylistsScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             } else {
-                                Icon(Icons.Default.PlaylistPlay, contentDescription = null, tint = Color.White, modifier = Modifier.size(34.dp))
+                                Icon(
+                                    Icons.Default.PlaylistPlay,
+                                    contentDescription = null,
+                                    tint = if (isDarkMode) Color.White else Color(0xFF333333),
+                                    modifier = Modifier.size(34.dp)
+                                )
                             }
                             Box(
                                 modifier = Modifier
@@ -820,23 +864,23 @@ fun PlaylistsScreen(
 
                         Spacer(modifier = Modifier.width(16.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(text = playlist.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            val descText = if (!playlist.description.isNullOrBlank()) playlist.description!! else "$trackCount canciones"
-                            Text(text = descText, fontSize = 13.sp, color = GlassTextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(text = playlist.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, color = textPrimary)
+                            val descText = if (!playlist.description.isNullOrBlank()) playlist.description!! else "$trackCount " + com.example.ui.Translations.get(settings.appLanguage, "songs")
+                            Text(text = descText, fontSize = 13.sp, color = textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
 
                         IconButton(onClick = {
                             pendingPhotoTarget = playlist.playlistId.toString()
                             imagePicker.launch("image/*")
                         }) {
-                            Icon(Icons.Default.PhotoCamera, contentDescription = "Cambiar portada", tint = GlassTextMuted)
+                            Icon(Icons.Default.PhotoCamera, contentDescription = com.example.ui.Translations.get(settings.appLanguage, "change_photo"), tint = if (isDarkMode) GlassTextMuted else Color(0xFF757575))
                         }
 
                         IconButton(onClick = {
                             editPlaylistTarget = playlist
                             pendingPhotoTarget = playlist.playlistId.toString()
                         }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Edit Playlist", tint = GlassTextMuted)
+                            Icon(Icons.Default.Edit, contentDescription = com.example.ui.Translations.get(settings.appLanguage, "edit_playlist"), tint = if (isDarkMode) GlassTextMuted else Color(0xFF757575))
                         }
                     }
                 }
@@ -864,15 +908,17 @@ fun SpotifyStylePlaylistDetail(
     onEdit: () -> Unit,
     onAddSongs: () -> Unit,
     onRemoveTrack: (Long) -> Unit,
-    onDeletePlaylist: () -> Unit
+    onDeletePlaylist: () -> Unit,
+    isDarkMode: Boolean = true,
+    language: String = "English"
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("¿Eliminar playlist?", color = Color.White, fontWeight = FontWeight.Bold) },
-            text = { Text("Esta acción eliminará la playlist '$playlistName'. Las canciones de tu biblioteca permanecerán intactas.", color = GlassTextSecondary) },
+            title = { Text(com.example.ui.Translations.get(language, "delete_playlist_title"), color = if (isDarkMode) Color.White else Color.Black, fontWeight = FontWeight.Bold) },
+            text = { Text(String.format(com.example.ui.Translations.get(language, "delete_playlist_msg"), playlistName), color = if (isDarkMode) GlassTextSecondary else Color(0xFF555555)) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -881,24 +927,28 @@ fun SpotifyStylePlaylistDetail(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE53935))
                 ) {
-                    Text("Eliminar", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text(com.example.ui.Translations.get(language, "delete"), color = Color.White, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancelar", color = Color.LightGray)
+                    Text(com.example.ui.Translations.get(language, "cancel"), color = if (isDarkMode) Color.LightGray else Color(0xFF666666))
                 }
             },
-            containerColor = Color(0xFF222222)
+            containerColor = if (isDarkMode) Color(0xFF222222) else Color.White
         )
     }
 
-    // Gradient background based on playlist theme
-    val topGradientColor = when {
-        isFavorites -> Color(0xFF5C1D1D)
-        isAllSongs -> Color(0xFF1E3A5F)
-        else -> Color(0xFF384428) // Deep aesthetic mossy/olive green as in Screenshot 4
+    // Default fallback color if no custom photo is provided
+    val defaultTopColor = when {
+        isFavorites -> if (isDarkMode) Color(0xFF5C1D1D) else Color(0xFFFFCDD2)
+        isAllSongs -> if (isDarkMode) Color(0xFF1E3A5F) else Color(0xFFBBDEFB)
+        else -> if (isDarkMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.65f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
     }
+
+    // Dynamic gradient background color extracted from the playlist's photo (or default theme color)
+    val extractedColor = com.example.data.rememberUriDominantColor(imageUri, defaultTopColor)
+    val topGradientColor = if (!imageUri.isNullOrBlank()) extractedColor else defaultTopColor
 
     Box(
         modifier = Modifier
@@ -907,13 +957,13 @@ fun SpotifyStylePlaylistDetail(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        topGradientColor,
-                        topGradientColor,
+                        topGradientColor.copy(alpha = if (isDarkMode) 0.85f else 0.55f),
+                        topGradientColor.copy(alpha = if (isDarkMode) 0.40f else 0.22f),
                         MaterialTheme.colorScheme.background,
                         MaterialTheme.colorScheme.background
                     ),
                     startY = 0f,
-                    endY = 1200f
+                    endY = 1300f
                 )
             )
     ) {
@@ -934,8 +984,8 @@ fun SpotifyStylePlaylistDetail(
                     IconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Regresar",
-                            tint = Color.White,
+                            contentDescription = com.example.ui.Translations.get(language, "back"),
+                            tint = if (isDarkMode) Color.White else Color.Black,
                             modifier = Modifier.size(28.dp)
                         )
                     }
@@ -944,8 +994,8 @@ fun SpotifyStylePlaylistDetail(
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(
                                 imageVector = Icons.Default.DeleteOutline,
-                                contentDescription = "Eliminar playlist",
-                                tint = Color.White.copy(alpha = 0.8f)
+                                contentDescription = com.example.ui.Translations.get(language, "delete"),
+                                tint = if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black.copy(alpha = 0.8f)
                             )
                         }
                     }
@@ -1037,7 +1087,7 @@ fun SpotifyStylePlaylistDetail(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.PhotoCamera,
-                                contentDescription = "Cambiar foto",
+                                contentDescription = com.example.ui.Translations.get(language, "change_photo"),
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -1053,23 +1103,32 @@ fun SpotifyStylePlaylistDetail(
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp, vertical = 4.dp)
                 ) {
+                    val displayName = when {
+                        isFavorites -> com.example.ui.Translations.get(language, "favorite_songs")
+                        isAllSongs -> com.example.ui.Translations.get(language, "all_tracks")
+                        else -> playlistName
+                    }
                     Text(
-                        text = playlistName,
+                        text = displayName,
                         fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
+                        color = if (isDarkMode) Color.White else Color.Black,
                         fontStyle = FontStyle.Normal
                     )
 
-                    if (description.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = description,
-                            fontSize = 14.sp,
-                            color = GlassTextSecondary,
-                            lineHeight = 18.sp
-                        )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    val displayDesc = when {
+                        isFavorites -> com.example.ui.Translations.get(language, "favorites_desc")
+                        isAllSongs -> com.example.ui.Translations.get(language, "all_songs_desc")
+                        description.isNotBlank() -> description
+                        else -> com.example.ui.Translations.get(language, "no_description")
                     }
+                    Text(
+                        text = displayDesc,
+                        fontSize = 14.sp,
+                        color = if (isDarkMode) GlassTextSecondary else Color(0xFF555555),
+                        lineHeight = 18.sp
+                    )
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -1105,18 +1164,18 @@ fun SpotifyStylePlaylistDetail(
                             text = creatorName,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color.White
+                            color = if (isDarkMode) Color.White else Color.Black
                         )
                         Text(
-                            text = " • ${tracks.size} canciones",
+                            text = " • ${tracks.size} " + com.example.ui.Translations.get(language, "songs"),
                             fontSize = 13.sp,
-                            color = GlassTextSecondary
+                            color = if (isDarkMode) GlassTextSecondary else Color(0xFF666666)
                         )
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Action buttons (Add, Edit, Shuffle, Play)
+                    // Action buttons (Photo icon, Add, Edit, Shuffle, Play)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1126,32 +1185,38 @@ fun SpotifyStylePlaylistDetail(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            AssistChip(
+                            // ONLY photo icon (without text) so Play and Shuffle buttons have plenty of room
+                            IconButton(
                                 onClick = onChangeCover,
-                                label = { Text("Cambiar foto", color = Color.White, fontSize = 12.sp) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                                },
-                                colors = AssistChipDefaults.assistChipColors(containerColor = Color(0x33FFFFFF)),
-                                shape = RoundedCornerShape(20.dp)
-                            )
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PhotoCamera,
+                                    contentDescription = com.example.ui.Translations.get(language, "change_photo"),
+                                    tint = if (isDarkMode) Color.White else Color.Black,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                             if (!isAllSongs && !isFavorites) {
                                 AssistChip(
                                     onClick = onAddSongs,
-                                    label = { Text("Agregar", color = Color.White, fontSize = 12.sp) },
+                                    label = { Text(com.example.ui.Translations.get(language, "add_label"), color = if (isDarkMode) Color.White else Color.Black, fontSize = 12.sp) },
                                     leadingIcon = {
-                                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Add, contentDescription = null, tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
                                     },
-                                    colors = AssistChipDefaults.assistChipColors(containerColor = Color(0x33FFFFFF)),
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000)),
                                     shape = RoundedCornerShape(20.dp)
                                 )
                                 AssistChip(
                                     onClick = onEdit,
-                                    label = { Text("Editar", color = Color.White, fontSize = 12.sp) },
+                                    label = { Text(com.example.ui.Translations.get(language, "edit_label"), color = if (isDarkMode) Color.White else Color.Black, fontSize = 12.sp) },
                                     leadingIcon = {
-                                        Icon(Icons.Default.Edit, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.Edit, contentDescription = null, tint = if (isDarkMode) Color.White else Color.Black, modifier = Modifier.size(16.dp))
                                     },
-                                    colors = AssistChipDefaults.assistChipColors(containerColor = Color(0x33FFFFFF)),
+                                    colors = AssistChipDefaults.assistChipColors(containerColor = if (isDarkMode) Color(0x33FFFFFF) else Color(0x14000000)),
                                     shape = RoundedCornerShape(20.dp)
                                 )
                             }
@@ -1161,7 +1226,10 @@ fun SpotifyStylePlaylistDetail(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            IconButton(onClick = onShuffleAll) {
+                            IconButton(
+                                onClick = onShuffleAll,
+                                modifier = Modifier.size(44.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.Shuffle,
                                     contentDescription = "Shuffle",
@@ -1192,7 +1260,7 @@ fun SpotifyStylePlaylistDetail(
 
             item {
                 Spacer(modifier = Modifier.height(10.dp))
-                HorizontalDivider(color = Color(0x1FFFFFFF), modifier = Modifier.padding(horizontal = 20.dp))
+                HorizontalDivider(color = if (isDarkMode) Color(0x1FFFFFFF) else Color(0x14000000), modifier = Modifier.padding(horizontal = 20.dp))
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
@@ -1206,15 +1274,15 @@ fun SpotifyStylePlaylistDetail(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "Esta playlist está vacía",
-                            color = Color.White,
+                            text = com.example.ui.Translations.get(language, "playlist_empty_title"),
+                            color = if (isDarkMode) Color.White else Color.Black,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Agrega tus canciones preferidas para empezar a escuchar.",
-                            color = GlassTextSecondary,
+                            text = com.example.ui.Translations.get(language, "playlist_empty_desc"),
+                            color = if (isDarkMode) GlassTextSecondary else Color(0xFF666666),
                             fontSize = 13.sp,
                             textAlign = TextAlign.Center
                         )
@@ -1227,7 +1295,7 @@ fun SpotifyStylePlaylistDetail(
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Agregar canciones", color = Color.Black, fontWeight = FontWeight.Bold)
+                                Text(com.example.ui.Translations.get(language, "add_songs"), color = Color.Black, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -1247,7 +1315,7 @@ fun SpotifyStylePlaylistDetail(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF222222))
+                                .background(if (isDarkMode) Color(0xFF222222) else Color(0xFFE5E5EA))
                         ) {
                             TrackImage(track = track, modifier = Modifier.fillMaxSize())
                         }
@@ -1259,7 +1327,7 @@ fun SpotifyStylePlaylistDetail(
                                 text = track.title,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = Color.White,
+                                color = if (isDarkMode) Color.White else Color.Black,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -1267,7 +1335,7 @@ fun SpotifyStylePlaylistDetail(
                             Text(
                                 text = track.artist,
                                 fontSize = 12.sp,
-                                color = GlassTextSecondary,
+                                color = if (isDarkMode) GlassTextSecondary else Color(0xFF666666),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -1278,17 +1346,17 @@ fun SpotifyStylePlaylistDetail(
                                 IconButton(onClick = { showTrackMenu = true }) {
                                     Icon(
                                         imageVector = Icons.Default.MoreVert,
-                                        contentDescription = "Opciones",
-                                        tint = GlassTextSecondary
+                                        contentDescription = "Options",
+                                        tint = if (isDarkMode) GlassTextSecondary else Color(0xFF757575)
                                     )
                                 }
                                 DropdownMenu(
                                     expanded = showTrackMenu,
                                     onDismissRequest = { showTrackMenu = false },
-                                    modifier = Modifier.background(Color(0xFF282828))
+                                    modifier = Modifier.background(if (isDarkMode) Color(0xFF282828) else Color.White)
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Quitar de esta playlist", color = Color(0xFFEF4444)) },
+                                        text = { Text(com.example.ui.Translations.get(language, "remove_from_playlist"), color = Color(0xFFEF4444)) },
                                         leadingIcon = {
                                             Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFEF4444))
                                         },

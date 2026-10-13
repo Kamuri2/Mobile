@@ -7,6 +7,7 @@ import com.example.model.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.jaudiotagger.audio.AudioFileIO
 import java.io.File
@@ -32,15 +33,17 @@ object ArtPreExtractor {
 
                 val seenAlbums = mutableSetOf<String>()
 
-                // 1. If tracks provided, process them directly
+                // Only process up to 20 immediate tracks for smooth start
                 if (!tracks.isNullOrEmpty()) {
-                    for (track in tracks) {
+                    val batch = tracks.take(20)
+                    for (track in batch) {
+                        if (!isActive) break
                         val albumKey = AlbumArtExtractor.getAlbumKey(track)
                         val albumFile = if (albumKey != null) File(artDir, "${albumKey}.jpg") else null
                         val trackFile = File(artDir, "track_${track.id}.jpg")
 
-                        if ((albumFile != null && albumFile.exists() && albumFile.length() > 0) ||
-                            (trackFile.exists() && trackFile.length() > 0)
+                        if ((albumFile != null && albumFile.exists() && albumFile.length() > 500) ||
+                            (trackFile.exists() && trackFile.length() > 500)
                         ) {
                             if (albumKey != null) seenAlbums.add(albumKey)
                             continue
@@ -49,56 +52,8 @@ object ArtPreExtractor {
                         if (albumKey != null && albumKey in seenAlbums) continue
 
                         if (track.path.isNotBlank()) {
-                            tryExtractFromPath(track.path, albumFile, trackFile, albumKey, seenAlbums)
+                            tryExtractFromPath(context, track.path, albumFile, trackFile, albumKey, seenAlbums)
                         }
-                    }
-                }
-
-                // 2. Scan MediaStore for any other audio tracks
-                val projection = arrayOf(
-                    MediaStore.Audio.Media._ID,
-                    MediaStore.Audio.Media.DATA,
-                    MediaStore.Audio.Media.ALBUM_ID
-                )
-
-                val cursor = try {
-                    context.contentResolver.query(
-                        MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                        projection,
-                        null,
-                        null,
-                        null
-                    )
-                } catch (e: Exception) {
-                    null
-                }
-
-                cursor?.use { c ->
-                    val idCol = c.getColumnIndex(MediaStore.Audio.Media._ID)
-                    val dataCol = c.getColumnIndex(MediaStore.Audio.Media.DATA)
-                    val albumCol = c.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID)
-
-                    while (c.moveToNext()) {
-                        val trackId = if (idCol != -1) c.getLong(idCol) else continue
-                        val albumId = if (albumCol != -1) c.getLong(albumCol) else -1L
-                        val dataPath = if (dataCol != -1) c.getString(dataCol) else null
-
-                        if (dataPath.isNullOrBlank()) continue
-
-                        val albumKey = if (albumId > 0) "album_mediastore_$albumId" else null
-                        val albumFile = if (albumKey != null) File(artDir, "${albumKey}.jpg") else null
-                        val trackFile = File(artDir, "track_$trackId.jpg")
-
-                        if ((albumFile != null && albumFile.exists() && albumFile.length() > 0) ||
-                            (trackFile.exists() && trackFile.length() > 0)
-                        ) {
-                            if (albumKey != null) seenAlbums.add(albumKey)
-                            continue
-                        }
-
-                        if (albumKey != null && albumKey in seenAlbums) continue
-
-                        tryExtractFromPath(dataPath, albumFile, trackFile, albumKey, seenAlbums)
                     }
                 }
             } catch (e: Exception) {
@@ -110,6 +65,7 @@ object ArtPreExtractor {
     }
 
     private fun tryExtractFromPath(
+        context: Context,
         path: String,
         albumFile: File?,
         trackFile: File,
@@ -120,20 +76,18 @@ object ArtPreExtractor {
             val audioFile = File(path)
             if (!audioFile.exists() || !audioFile.canRead()) return
 
-            val audio = AudioFileIO.read(audioFile)
-            val pictures = audio.tag?.artworkList
-            val best = pictures?.maxByOrNull { it.binaryData?.size ?: 0 }
-
-            if (best?.binaryData != null && best.binaryData.isNotEmpty()) {
-                val data = best.binaryData
-                if (albumFile != null) {
-                    albumFile.writeBytes(data)
+            val artFile = AlbumArtExtractor(context).getHighResArt(audioFile)
+            if (artFile != null && AlbumArtExtractor.isValidImageFile(artFile)) {
+                if (albumFile != null && !albumFile.exists()) {
+                    artFile.copyTo(albumFile, overwrite = false)
                     if (albumKey != null) {
                         seenAlbums.add(albumKey)
                         AlbumArtExtractor.linkArtworkToAlbum(albumKey, albumFile)
                     }
                 }
-                trackFile.writeBytes(data)
+                if (!trackFile.exists()) {
+                    artFile.copyTo(trackFile, overwrite = false)
+                }
             }
         } catch (_: Exception) {}
     }

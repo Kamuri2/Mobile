@@ -40,6 +40,12 @@ import com.example.ui.theme.GlassTextSecondary
 import com.example.ui.theme.OrangeGlow
 import com.example.ui.theme.PurpleAccent
 
+import com.example.ui.Translations
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+
 @Composable
 fun EqualizerScreen(
     isPlaying: Boolean,
@@ -49,6 +55,11 @@ fun EqualizerScreen(
     onVolumeChange: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val playerManager = remember { com.example.player.AudioPlayerManager.getInstance(context) }
+    val appSettings by playerManager.appSettings.collectAsState()
+    val lang = appSettings.appLanguage
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -66,13 +77,13 @@ fun EqualizerScreen(
             Spacer(modifier = Modifier.size(10.dp))
             Column {
                 Text(
-                    text = "Ecualizador Liquid Audio",
+                    text = Translations.get(lang, "equalizer_title"),
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                     color = GlassTextPrimary
                 )
                 Text(
-                    text = "Ajusta perfiles de sonido y efectos de cristal",
+                    text = Translations.get(lang, "equalizer_subtitle"),
                     fontSize = 12.sp,
                     color = GlassTextSecondary
                 )
@@ -95,7 +106,7 @@ fun EqualizerScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Frecuencia de Salida",
+                        text = Translations.get(lang, "output_frequency"),
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
@@ -128,7 +139,7 @@ fun EqualizerScreen(
                     )
                     Spacer(modifier = Modifier.size(8.dp))
                     Text(
-                        text = "Volumen Master: ${(volume * 100).toInt()}%",
+                        text = String.format(Translations.get(lang, "master_volume"), (volume * 100).toInt()),
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = GlassTextPrimary
@@ -151,7 +162,7 @@ fun EqualizerScreen(
 
         // Equalizer Presets
         Text(
-            text = "Perfiles de Sonido Prestablecidos",
+            text = Translations.get(lang, "sound_presets"),
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
             color = GlassTextPrimary

@@ -16,9 +16,21 @@ import java.nio.ByteOrder
  * NO usa MediaStore (que downscalea a 300-512px).
  * Mantiene caché en disco con clave hash/tamaño para 0 I/O en lecturas repetidas.
  */
-class AlbumArtExtractor(private val context: Context) {
+class AlbumArtExtractor private constructor(context: Context) {
+    private val appContext = context.applicationContext
 
     companion object {
+        @Volatile
+        private var INSTANCE: AlbumArtExtractor? = null
+
+        fun getInstance(context: Context): AlbumArtExtractor {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: AlbumArtExtractor(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+
+        operator fun invoke(context: Context): AlbumArtExtractor = getInstance(context)
+
         val albumFileCache = java.util.concurrent.ConcurrentHashMap<String, File>()
 
         fun linkArtworkToAlbum(albumKey: String, file: File) {
@@ -55,83 +67,71 @@ class AlbumArtExtractor(private val context: Context) {
         }
 
         fun hasEmbeddedArtworkHeader(inputStream: java.io.InputStream): Boolean {
+            return true
+        }
+
+        fun isValidImageFile(file: File?): Boolean {
+            return file != null && file.exists() && file.length() >= 500L
+        }
+
+        fun verifyBitmapHeader(file: File?): Boolean {
+            if (file == null || !file.exists() || file.length() < 500L) return false
             return try {
-                val header = ByteArray(256 * 1024)
-                var bytesRead = 0
-                while (bytesRead < header.size) {
-                    val r = inputStream.read(header, bytesRead, header.size - bytesRead)
-                    if (r <= 0) break
-                    bytesRead += r
-                }
-                if (bytesRead < 4) return false
-
-                // ID3v2 (MP3, AAC)
-                if (header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()) {
-                    val apic = "APIC".toByteArray(Charsets.US_ASCII)
-                    val pic = "PIC".toByteArray(Charsets.US_ASCII)
-                    return indexOfBytes(header, bytesRead, apic) != -1 || indexOfBytes(header, bytesRead, pic) != -1
-                }
-
-                // FLAC
-                if (header[0] == 'f'.code.toByte() && header[1] == 'L'.code.toByte() && header[2] == 'a'.code.toByte() && header[3] == 'C'.code.toByte()) {
-                    var offset = 4
-                    while (offset + 4 <= bytesRead) {
-                        val headerByte = header[offset].toInt() and 0xFF
-                        val isLast = (headerByte and 0x80) != 0
-                        val blockType = headerByte and 0x7F
-                        if (blockType == 6) return true
-                        val length = ((header[offset + 1].toInt() and 0xFF) shl 16) or
-                                     ((header[offset + 2].toInt() and 0xFF) shl 8) or
-                                     (header[offset + 3].toInt() and 0xFF)
-                        offset += 4 + length
-                        if (isLast) break
-                    }
-                    return false
-                }
-
-                // MP4 / M4A (contains 'covr')
-                val covr = "covr".toByteArray(Charsets.US_ASCII)
-                if (indexOfBytes(header, bytesRead, covr) != -1) {
-                    return true
-                }
-
-                // OGG / Vorbis / Opus
-                val oggPic = "METADATA_BLOCK_PICTURE".toByteArray(Charsets.US_ASCII)
-                val oggCover = "COVERART".toByteArray(Charsets.US_ASCII)
-                if (indexOfBytes(header, bytesRead, oggPic) != -1 || indexOfBytes(header, bytesRead, oggCover) != -1) {
-                    return true
-                }
-
-                false
+                val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+                opts.outWidth > 0 && opts.outHeight > 0
             } catch (_: Exception) {
                 false
             }
         }
 
-        private fun indexOfBytes(source: ByteArray, sourceLength: Int, target: ByteArray): Int {
-            if (target.isEmpty() || sourceLength < target.size) return -1
-            val max = sourceLength - target.size
-            for (i in 0..max) {
-                var found = true
-                for (j in target.indices) {
-                    if (source[i + j] != target[j]) {
-                        found = false
-                        break
-                    }
-                }
-                if (found) return i
+        fun verifyBitmapFully(file: File?): Boolean {
+            if (!isValidImageFile(file)) return false
+            return try {
+                val decodeOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
+                val bmp = android.graphics.BitmapFactory.decodeFile(file!!.absolutePath, decodeOpts)
+                val isValid = bmp != null && bmp.width > 0 && bmp.height > 0
+                bmp?.recycle()
+                isValid
+            } catch (_: Exception) {
+                false
             }
-            return -1
         }
     }
 
-    private val cacheDir = File(context.cacheDir, "album_art_hd")
+    private val cacheDir = File(appContext.cacheDir, "album_art_hd")
     private val noArtworkCache = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     init {
         if (!cacheDir.exists()) {
             cacheDir.mkdirs()
         }
+    }
+
+    fun purgeCorruptCache() {
+        try {
+            cacheDir.listFiles()?.forEach { file ->
+                if (file.name.startsWith("tmp_") || file.length() < 500L) {
+                    file.delete()
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Limpia completamente los negativos de carátula en memoria y archivos corruptos/incompletos
+     * para permitir que una función de re-escaneo o reparación extraiga portadas desde cero.
+     */
+    fun resetArtworkCaches(purgeAllArtFiles: Boolean = false) {
+        noArtworkCache.clear()
+        albumFileCache.clear()
+        try {
+            cacheDir.listFiles()?.forEach { file ->
+                if (purgeAllArtFiles || file.name.startsWith("tmp_") || !isValidImageFile(file)) {
+                    file.delete()
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     /**
@@ -141,28 +141,40 @@ class AlbumArtExtractor(private val context: Context) {
     fun getExistingArtFile(track: Track): File? {
         val albumKey = getAlbumKey(track)
         if (albumKey != null) {
-            albumFileCache[albumKey]?.let { if (it.exists() && it.length() > 0) return it }
+            albumFileCache[albumKey]?.let { 
+                if (isValidImageFile(it)) return it else it.delete() 
+            }
             val albumFile = File(cacheDir, "${albumKey}.jpg")
-            if (albumFile.exists() && albumFile.length() > 0) {
-                albumFileCache[albumKey] = albumFile
-                return albumFile
+            if (albumFile.exists()) {
+                if (isValidImageFile(albumFile)) {
+                    albumFileCache[albumKey] = albumFile
+                    return albumFile
+                } else {
+                    albumFile.delete()
+                }
             }
         }
 
         val trackFile = File(cacheDir, "track_${track.id}.jpg")
-        if (trackFile.exists() && trackFile.length() > 0) return trackFile
+        if (trackFile.exists()) {
+            if (isValidImageFile(trackFile)) return trackFile else trackFile.delete()
+        }
 
         if (track.path.isNotBlank()) {
             val f = File(track.path)
             val fileCache = File(cacheDir, "${f.nameWithoutExtension}_${f.length()}.jpg")
-            if (fileCache.exists() && fileCache.length() > 0) return fileCache
+            if (fileCache.exists()) {
+                if (isValidImageFile(fileCache)) return fileCache else fileCache.delete()
+            }
         }
         return null
     }
 
     fun getExistingArtFile(audioFile: File): File? {
         val cacheFile = File(cacheDir, "${audioFile.nameWithoutExtension}_${audioFile.length()}.jpg")
-        if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile
+        if (cacheFile.exists()) {
+            if (isValidImageFile(cacheFile)) return cacheFile else cacheFile.delete()
+        }
         return null
     }
 
@@ -174,20 +186,27 @@ class AlbumArtExtractor(private val context: Context) {
         if (!audioFile.exists() || !audioFile.canRead()) return null
 
         val cacheFile = File(cacheDir, "${audioFile.nameWithoutExtension}_${audioFile.length()}.jpg")
-        if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile
-
-        if (noArtworkCache.contains(audioFile.absolutePath)) return null
+        if (cacheFile.exists() && isValidImageFile(cacheFile)) return cacheFile
 
         return try {
-            val bytes = extractOriginalArtworkBytes(audioFile)
-            if (bytes == null) {
-                noArtworkCache.add(audioFile.absolutePath)
-                return null
-            }
+            val bytes = extractOriginalArtworkBytes(audioFile) ?: return null
 
             cacheDir.mkdirs()
-            cacheFile.writeBytes(bytes)
-            cacheFile
+            val tempFile = File(cacheDir, "tmp_${System.currentTimeMillis()}_${cacheFile.name}")
+            tempFile.writeBytes(bytes)
+            if (isValidImageFile(tempFile)) {
+                if (cacheFile.exists()) cacheFile.delete()
+                if (tempFile.renameTo(cacheFile)) {
+                    cacheFile
+                } else {
+                    tempFile.copyTo(cacheFile, overwrite = true)
+                    tempFile.delete()
+                    cacheFile
+                }
+            } else {
+                tempFile.delete()
+                null
+            }
         } catch (e: Exception) {
             Log.w("AlbumArtExtractor", "Fallo extrayendo artwork de ${audioFile.name}: ${e.message}")
             null
@@ -208,7 +227,7 @@ class AlbumArtExtractor(private val context: Context) {
             val file = File(track.path)
             if (file.exists() && file.canRead()) {
                 val art = getHighResArt(file)
-                if (art != null) {
+                if (art != null && isValidImageFile(art)) {
                     val trackFile = File(cacheDir, "track_${track.id}.jpg")
                     try {
                         if (!trackFile.exists()) art.copyTo(trackFile, overwrite = false)
@@ -225,46 +244,98 @@ class AlbumArtExtractor(private val context: Context) {
                         }
                     }
                     return art
+                } else {
+                    noArtworkCache.add(track.path)
+                    noArtworkCache.add("track_${track.id}")
+                    if (track.contentUri != Uri.EMPTY) noArtworkCache.add(track.contentUri.toString())
+                    if (track.albumArtUri == null) return null
                 }
             }
         }
 
-        // Intento con ContentUri si no hay ruta de archivo directa
+        // Intento con albumArtUri si ya existe en metadatos
+        if (track.albumArtUri != null) {
+            try {
+                appContext.contentResolver.openInputStream(track.albumArtUri)?.use { input ->
+                    val tempFile = File(cacheDir, "tmp_${System.currentTimeMillis()}_track_${track.id}.jpg")
+                    tempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                    val trackFile = File(cacheDir, "track_${track.id}.jpg")
+                    if (isValidImageFile(tempFile)) {
+                        if (trackFile.exists()) trackFile.delete()
+                        if (!tempFile.renameTo(trackFile)) {
+                            tempFile.copyTo(trackFile, overwrite = true)
+                            tempFile.delete()
+                        }
+                        if (albumKey != null) {
+                            val albumFile = File(cacheDir, "${albumKey}.jpg")
+                            try { trackFile.copyTo(albumFile, overwrite = false) } catch (_: Exception) {}
+                            albumFileCache[albumKey] = albumFile
+                        }
+                        return trackFile
+                    } else {
+                        tempFile.delete()
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Intento con ContentUri
         if (track.contentUri != Uri.EMPTY) {
+            val trackUriKey = "track_${track.id}"
+            if (noArtworkCache.contains(trackUriKey) || noArtworkCache.contains(track.contentUri.toString())) return null
+
             val cacheFile = File(cacheDir, "track_${track.id}.jpg")
-            if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile
-            val uriKey = track.contentUri.toString()
-            if (noArtworkCache.contains(uriKey)) return null
+            if (cacheFile.exists() && isValidImageFile(cacheFile)) return cacheFile
 
             return try {
                 var bytes: ByteArray? = null
                 val mmr = MediaMetadataRetriever()
                 try {
-                    context.contentResolver.openFileDescriptor(track.contentUri, "r")?.use { pfd ->
+                    appContext.contentResolver.openFileDescriptor(track.contentUri, "r")?.use { pfd ->
                         mmr.setDataSource(pfd.fileDescriptor)
                         bytes = mmr.embeddedPicture
                     }
+                } catch (_: Exception) {
+                    try {
+                        mmr.setDataSource(appContext, track.contentUri)
+                        bytes = mmr.embeddedPicture
+                    } catch (_: Exception) {}
                 } finally {
                     try { mmr.release() } catch (ignored: Exception) {}
                 }
 
                 if (bytes != null && bytes!!.isNotEmpty()) {
                     cacheDir.mkdirs()
-                    cacheFile.writeBytes(bytes!!)
-
-                    if (albumKey != null) {
-                        val albumFile = File(cacheDir, "${albumKey}.jpg")
-                        try {
-                            if (!albumFile.exists()) cacheFile.copyTo(albumFile, overwrite = false)
-                        } catch (_: Exception) {}
+                    val tempFile = File(cacheDir, "tmp_${System.currentTimeMillis()}_${cacheFile.name}")
+                    tempFile.writeBytes(bytes!!)
+                    if (isValidImageFile(tempFile)) {
+                        if (cacheFile.exists()) cacheFile.delete()
+                        if (!tempFile.renameTo(cacheFile)) {
+                            tempFile.copyTo(cacheFile, overwrite = true)
+                            tempFile.delete()
+                        }
+                        if (albumKey != null) {
+                            val albumFile = File(cacheDir, "${albumKey}.jpg")
+                            try {
+                                if (!albumFile.exists()) cacheFile.copyTo(albumFile, overwrite = false)
+                                albumFileCache[albumKey] = albumFile
+                            } catch (_: Exception) {}
+                        }
+                        cacheFile
+                    } else {
+                        tempFile.delete()
+                        null
                     }
-                    cacheFile
                 } else {
-                    noArtworkCache.add(uriKey)
+                    noArtworkCache.add(trackUriKey)
+                    noArtworkCache.add(track.contentUri.toString())
                     null
                 }
             } catch (e: Exception) {
-                noArtworkCache.add(uriKey)
+                noArtworkCache.add(trackUriKey)
+                noArtworkCache.add(track.contentUri.toString())
                 null
             }
         }
@@ -277,37 +348,57 @@ class AlbumArtExtractor(private val context: Context) {
      */
     fun getFlacArt(audioFile: File): File? {
         val cacheFile = File(cacheDir, "${audioFile.nameWithoutExtension}_${audioFile.length()}.png")
-        if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile
+        if (cacheFile.exists() && isValidImageFile(cacheFile)) return cacheFile
 
         return try {
             val bytes = extractOriginalArtworkBytes(audioFile) ?: return null
 
             cacheDir.mkdirs()
-            cacheFile.writeBytes(bytes)
-            cacheFile
+            val tempFile = File(cacheDir, "tmp_${System.currentTimeMillis()}_${cacheFile.name}")
+            tempFile.writeBytes(bytes)
+            if (isValidImageFile(tempFile)) {
+                if (cacheFile.exists()) cacheFile.delete()
+                if (tempFile.renameTo(cacheFile)) cacheFile else {
+                    tempFile.copyTo(cacheFile, overwrite = true)
+                    tempFile.delete()
+                    cacheFile
+                }
+            } else {
+                tempFile.delete()
+                null
+            }
         } catch (e: Exception) {
             null
         }
     }
 
     /**
-     * Extrae los bytes puros sin downsamplear usando JAudioTagger -> MediaMetadataRetriever -> Sidecar images.
+     * Extrae los bytes puros sin downsamplear usando MediaMetadataRetriever -> JAudioTagger -> Sidecar images.
      */
     private fun extractOriginalArtworkBytes(audioFile: File): ByteArray? {
-        var fileTagChecked = false
-        // 1. JAudioTagger (mantiene resolución nativa de etiquetas ID3 APIC / FLAC PICTURE / MP4 covr)
+        if (!audioFile.exists() || !audioFile.canRead()) return null
+        if (noArtworkCache.contains(audioFile.absolutePath)) return null
+
+        var tagChecked = false
+
+        // 1. JAudioTagger first (pure Java ID3v2 APIC / FLAC PICTURE / MP4 covr / Vorbis without native MMR JNI error logs)
         try {
             val audio = AudioFileIO.read(audioFile)
             val tag = audio.tag
             if (tag != null) {
-                fileTagChecked = true
+                tagChecked = true
                 val pictures = tag.artworkList
                 if (!pictures.isNullOrEmpty()) {
                     val best = pictures
-                        .filter { it.binaryData != null && it.binaryData.isNotEmpty() }
+                        .filter { it.binaryData != null && it.binaryData.size > 500 }
                         .maxByOrNull { it.binaryData.size }
-                    if (best?.binaryData != null && best.binaryData.isNotEmpty()) {
-                        return best.binaryData
+                    if (best?.binaryData != null) {
+                        val raw = best.binaryData
+                        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
+                        if (opts.outWidth > 0 && opts.outHeight > 0) {
+                            return raw
+                        }
                     }
                 }
 
@@ -315,8 +406,12 @@ class AlbumArtExtractor(private val context: Context) {
                 val picBase64 = tag.getFirst("METADATA_BLOCK_PICTURE")
                 if (!picBase64.isNullOrBlank()) {
                     val decoded = decodeVorbisPictureBlock(picBase64)
-                    if (decoded != null && decoded.isNotEmpty()) {
-                        return decoded
+                    if (decoded != null && decoded.size > 500) {
+                        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        android.graphics.BitmapFactory.decodeByteArray(decoded, 0, decoded.size, opts)
+                        if (opts.outWidth > 0 && opts.outHeight > 0) {
+                            return decoded
+                        }
                     }
                 }
 
@@ -325,31 +420,21 @@ class AlbumArtExtractor(private val context: Context) {
                 if (!coverBase64.isNullOrBlank()) {
                     try {
                         val bytes = Base64.decode(coverBase64.trim(), Base64.DEFAULT)
-                        if (bytes.isNotEmpty()) return bytes
+                        if (bytes.size > 500) {
+                            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                                return bytes
+                            }
+                        }
                     } catch (ignored: Exception) {}
                 }
             }
         } catch (e: Exception) {
-            Log.d("AlbumArtExtractor", "JAudioTagger no encontró arte embebido: ${e.message}")
+            // Container not supported by JAudioTagger
         }
 
-        // 2. MediaMetadataRetriever nativo a resolución completa
-        try {
-            val mmr = MediaMetadataRetriever()
-            try {
-                mmr.setDataSource(audioFile.absolutePath)
-                val rawBytes = mmr.embeddedPicture
-                if (rawBytes != null && rawBytes.isNotEmpty()) {
-                    return rawBytes
-                }
-            } finally {
-                try { mmr.release() } catch (ignored: Exception) {}
-            }
-        } catch (e: Exception) {
-            Log.d("AlbumArtExtractor", "MMR falló para ${audioFile.name}: ${e.message}")
-        }
-
-        // 3. Sidecar cover files en el mismo directorio (SOLO si coincide exactamente con el nombre del archivo de la canción)
+        // 2. Sidecar cover files en el mismo directorio
         try {
             val parent = audioFile.parentFile
             if (parent != null && parent.exists() && parent.isDirectory) {
@@ -357,17 +442,49 @@ class AlbumArtExtractor(private val context: Context) {
                     "${audioFile.nameWithoutExtension}.jpg",
                     "${audioFile.nameWithoutExtension}.png",
                     "${audioFile.nameWithoutExtension}.jpeg",
-                    "${audioFile.nameWithoutExtension}.webp"
+                    "${audioFile.nameWithoutExtension}.webp",
+                    "cover.jpg",
+                    "cover.png",
+                    "folder.jpg",
+                    "folder.png"
                 )
                 for (name in candidateNames) {
                     val sidecar = File(parent, name)
                     if (sidecar.exists() && sidecar.canRead() && sidecar.length() > 500) {
-                        return sidecar.readBytes()
+                        val bytes = sidecar.readBytes()
+                        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                        if (opts.outWidth > 0 && opts.outHeight > 0) {
+                            return bytes
+                        }
                     }
                 }
             }
         } catch (ignored: Exception) {}
 
+        // 3. ONLY call MediaMetadataRetriever if JAudioTagger could NOT parse the audio tags.
+        // If JAudioTagger successfully checked the tag and found no artwork, MMR will also find none,
+        // and calling it would trigger getEmbeddedPicture failed logcat error!
+        if (!tagChecked) {
+            try {
+                val mmr = MediaMetadataRetriever()
+                try {
+                    mmr.setDataSource(audioFile.absolutePath)
+                    val rawBytes = mmr.embeddedPicture
+                    if (rawBytes != null && rawBytes.size > 500) {
+                        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        android.graphics.BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, opts)
+                        if (opts.outWidth > 0 && opts.outHeight > 0) {
+                            return rawBytes
+                        }
+                    }
+                } finally {
+                    try { mmr.release() } catch (ignored: Exception) {}
+                }
+            } catch (e: Exception) {}
+        }
+
+        noArtworkCache.add(audioFile.absolutePath)
         return null
     }
 

@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 import androidx.compose.foundation.rememberScrollState
 
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.MusicNote
 
 import androidx.compose.material.icons.filled.Person
 
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 
 import androidx.compose.material.icons.filled.Shuffle
@@ -114,11 +116,27 @@ fun ArtistsScreen(
     modifier: Modifier = Modifier
 ) {
     val artistGroups = remember(tracks) {
-        tracks.filter { it.artist.isNotBlank() && it.artist != "Unknown Artist" }
-            .groupBy { it.artist }
-            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
+        val map = mutableMapOf<String, MutableList<Track>>()
+        tracks.forEach { track ->
+            val artists = com.example.util.ArtistParser.extractAllArtists(track.artist, track.title)
+            if (artists.isEmpty()) {
+                val clean = track.artist.trim()
+                if (clean.isNotBlank() && clean != "Unknown Artist" && clean != "<unknown>") {
+                    map.getOrPut(clean) { mutableListOf() }.add(track)
+                }
+            } else {
+                artists.forEach { artistName ->
+                    val clean = artistName.trim()
+                    if (clean.isNotBlank() && clean != "Unknown Artist" && clean != "<unknown>") {
+                        map.getOrPut(clean) { mutableListOf() }.add(track)
+                    }
+                }
+            }
+        }
+        map.toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
     
+    val cacheRevision by ArtistInfoFetcher.cacheRevision.collectAsState()
     var selectedArtist by remember { mutableStateOf<String?>(initialArtistName) }
     var searchQuery by remember { mutableStateOf("") }
     LaunchedEffect(initialArtistName) { if(initialArtistName != null) selectedArtist = initialArtistName }
@@ -152,6 +170,8 @@ fun ArtistsScreen(
         if (showAboutDialog) {
             ArtistAboutScreen(
                 artistName = selectedArtist!!,
+                language = settings.appLanguage,
+                sampleTrack = artistTracks.firstOrNull(),
                 onBack = { showAboutDialog = false }
             )
         }
@@ -185,7 +205,7 @@ fun ArtistsScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Buscar artista...", color = Color.Gray) },
+                placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "search_artist"), color = Color.Gray) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -280,7 +300,7 @@ fun ArtistsScreen(
 
             if (filteredArtists.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(if (artistGroups.isEmpty()) com.example.ui.Translations.get(settings.appLanguage, "no_artists") else "No hay resultados", color = GlassTextMuted)
+                    Text(if (artistGroups.isEmpty()) com.example.ui.Translations.get(settings.appLanguage, "no_artists") else com.example.ui.Translations.get(settings.appLanguage, "no_results"), color = GlassTextMuted)
                 }
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -291,11 +311,29 @@ fun ArtistsScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(filteredArtists) { artistName ->
-                        var imageUrl by remember { mutableStateOf<String?>(null) }
+                    items(filteredArtists, key = { it }) { artistName ->
+                        var imageUrl by remember(artistName, cacheRevision) {
+                            mutableStateOf(
+                                com.example.data.ArtistImageRepository.getMemoryCachedImageUrl(artistName)
+                                    ?: com.example.data.ArtistInfoFetcher.getCachedArtistInfo(artistName)?.imageUrl
+                            )
+                        }
                         
-                        LaunchedEffect(artistName) {
-                            imageUrl = com.example.data.ArtistImageRepository.getArtistImageUrl(artistName)
+                        LaunchedEffect(artistName, cacheRevision) {
+                            if (imageUrl == null) {
+                                val sampleTrack = artistGroups[artistName]?.firstOrNull()
+                                imageUrl = com.example.data.ArtistImageRepository.getArtistImageUrl(
+                                    artistName = artistName,
+                                    trackTitle = sampleTrack?.title,
+                                    albumName = sampleTrack?.album,
+                                    genre = sampleTrack?.genre
+                                ) ?: com.example.data.ArtistInfoFetcher.fetchArtistPhoto(
+                                    artistName = artistName,
+                                    trackTitle = sampleTrack?.title,
+                                    albumName = sampleTrack?.album,
+                                    genre = sampleTrack?.genre
+                                )
+                            }
                         }
 
                         Column(
@@ -312,7 +350,7 @@ fun ArtistsScreen(
                                     .background(Color(0x1AFFFFFF)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                val trackFallback = tracks.firstOrNull { it.artist == artistName }
+                                val trackFallback = remember(artistName) { artistGroups[artistName]?.firstOrNull() }
                                 if (imageUrl != null) {
                                     AsyncImage(
                                         model = imageUrl,
@@ -388,19 +426,28 @@ fun ArtistDetailScreen(
     onPlayQueue: ((List<Track>, Int) -> Unit)? = null,
     onNavigateToAlbum: ((String) -> Unit)? = null
 ) {
-    var artistInfo by remember(artistName) { mutableStateOf<ArtistInfo?>(ArtistInfoFetcher.getCachedArtistInfo(artistName)) }
+    val cacheRevision by ArtistInfoFetcher.cacheRevision.collectAsState()
+    var artistInfo by remember(artistName, cacheRevision) { mutableStateOf<ArtistInfo?>(ArtistInfoFetcher.getCachedArtistInfo(artistName)) }
     var viewingAlbumName by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val primaryColor = settings.selectedTheme.primaryColor
     val isLightPrimary = (0.299f * primaryColor.red + 0.587f * primaryColor.green + 0.114f * primaryColor.blue) > 0.5f
     val playIconTint = if (isLightPrimary) Color.Black else Color.White
     
-    LaunchedEffect(artistName) {
+    LaunchedEffect(artistName, cacheRevision) {
         val cached = ArtistInfoFetcher.getCachedArtistInfo(artistName)
-        if (cached != null) {
+        if (cached != null && !cached.imageUrl.isNullOrBlank() && !cached.bio.isNullOrBlank()) {
             artistInfo = cached
+        } else {
+            if (cached != null) artistInfo = cached
+            val sampleTrack = tracks.firstOrNull()
+            artistInfo = ArtistInfoFetcher.fetchArtistInfo(
+                rawArtistName = artistName,
+                trackTitle = sampleTrack?.title,
+                albumName = sampleTrack?.album,
+                genre = sampleTrack?.genre
+            )
         }
-        artistInfo = ArtistInfoFetcher.fetchArtistInfo(artistName)
     }
 
     if (viewingAlbumName != null) {
@@ -487,7 +534,7 @@ fun ArtistDetailScreen(
                         .clickable { onShowAbout() }
                 ) {
                     Text(
-                        text = "ARTIST",
+                        text = com.example.ui.Translations.get(settings.appLanguage, "artist").uppercase(),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp,
@@ -503,15 +550,17 @@ fun ArtistDetailScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val albumsWord = if (albumsCount == 1) com.example.ui.Translations.get(settings.appLanguage, "album_capitalized") else com.example.ui.Translations.get(settings.appLanguage, "albums")
+                        val songsWord = if (tracks.size == 1) com.example.ui.Translations.get(settings.appLanguage, "song_singular") else com.example.ui.Translations.get(settings.appLanguage, "songs")
                         Text(
-                            text = "$albumsCount ${if (albumsCount == 1) "álbum" else "álbumes"} • ${tracks.size} ${if (tracks.size == 1) "canción" else "canciones"}",
+                            text = "$albumsCount $albumsWord • ${tracks.size} $songsWord",
                             fontSize = 14.sp,
                             color = GlassTextSecondary
                         )
                         if (artistInfo?.bio != null) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "• Biografía",
+                                text = "• " + com.example.ui.Translations.get(settings.appLanguage, "biography"),
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary
@@ -631,7 +680,7 @@ fun ArtistDetailScreen(
 
                 if (artistAlbums.isNotEmpty()) {
                     Text(
-                        text = "Álbumes",
+                        text = com.example.ui.Translations.get(settings.appLanguage, "albums"),
                         fontSize = 22.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
@@ -687,8 +736,9 @@ fun ArtistDetailScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(2.dp))
+                                    val countWord = if (albumTracks.size == 1) com.example.ui.Translations.get(settings.appLanguage, "song_singular") else com.example.ui.Translations.get(settings.appLanguage, "songs")
                                     Text(
-                                        text = "${albumTracks.size} ${if (albumTracks.size == 1) "canción" else "canciones"}",
+                                        text = "${albumTracks.size} $countWord",
                                         fontSize = 12.sp,
                                         color = GlassTextSecondary,
                                         maxLines = 1,
@@ -702,7 +752,12 @@ fun ArtistDetailScreen(
                     Spacer(modifier = Modifier.height(24.dp))
                 }
 
-                Text("Todas las canciones", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text(
+                    text = com.example.ui.Translations.get(settings.appLanguage, "all_tracks"),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -773,16 +828,26 @@ fun ArtistDetailScreen(
 @Composable
 fun ArtistAboutScreen(
     artistName: String,
+    language: String = "en",
+    sampleTrack: Track? = null,
     onBack: () -> Unit
 ) {
-    var artistInfo by remember(artistName) { mutableStateOf<ArtistInfo?>(ArtistInfoFetcher.getCachedArtistInfo(artistName)) }
+    val cacheRevision by ArtistInfoFetcher.cacheRevision.collectAsState()
+    var artistInfo by remember(artistName, cacheRevision) { mutableStateOf<ArtistInfo?>(ArtistInfoFetcher.getCachedArtistInfo(artistName)) }
     
-    LaunchedEffect(artistName) {
+    LaunchedEffect(artistName, cacheRevision) {
         val cached = ArtistInfoFetcher.getCachedArtistInfo(artistName)
-        if (cached != null) {
+        if (cached != null && !cached.imageUrl.isNullOrBlank() && !cached.bio.isNullOrBlank()) {
             artistInfo = cached
+        } else {
+            if (cached != null) artistInfo = cached
+            artistInfo = ArtistInfoFetcher.fetchArtistInfo(
+                rawArtistName = artistName,
+                trackTitle = sampleTrack?.title,
+                albumName = sampleTrack?.album,
+                genre = sampleTrack?.genre
+            )
         }
-        artistInfo = ArtistInfoFetcher.fetchArtistInfo(artistName)
     }
 
     Column(
@@ -814,7 +879,7 @@ fun ArtistAboutScreen(
                     .align(Alignment.TopStart)
                     .background(Color.Black.copy(alpha = 0.5f), CircleShape)
             ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
+                Icon(Icons.Default.ArrowBack, contentDescription = com.example.ui.Translations.get(language, "close"), tint = Color.White)
             }
             
             Text(
@@ -828,22 +893,82 @@ fun ArtistAboutScreen(
         
         Column(modifier = Modifier.padding(24.dp)) {
             Text(text = "${artistInfo?.followers ?: "0"}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = "FOLLOWERS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+            Text(text = com.example.ui.Translations.get(language, "followers").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
             
             Spacer(modifier = Modifier.height(24.dp))
             
             Text(text = "${artistInfo?.listeners ?: "0"}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = "MONTHLY LISTENERS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+            Text(text = com.example.ui.Translations.get(language, "monthly_listeners").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
             
             Spacer(modifier = Modifier.height(24.dp))
             
-            Text(text = artistInfo?.origin ?: "Unknown", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = "ORIGIN", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+            Text(text = artistInfo?.origin ?: com.example.ui.Translations.get(language, "unknown_artist"), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+            Text(text = com.example.ui.Translations.get(language, "origin").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
             
             Spacer(modifier = Modifier.height(40.dp))
             
+            val rawBio = artistInfo?.bio
+            val targetLangCode = remember(language) { com.example.data.TranslationHelper.mapToLanguageCode(language) }
+            val isAlreadyTarget = remember(rawBio, targetLangCode) {
+                if (rawBio.isNullOrBlank()) true
+                else com.example.data.TranslationHelper.isAlreadyInTargetLanguage(rawBio, targetLangCode)
+            }
+            var translatedBio by remember(rawBio, targetLangCode) { mutableStateOf<String?>(null) }
+            var isTranslating by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+            var showTranslated by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+            val coroutineScope = rememberCoroutineScope()
+
+            val displayBioText = when {
+                showTranslated && !translatedBio.isNullOrBlank() -> translatedBio!!
+                !rawBio.isNullOrBlank() -> rawBio
+                else -> ""
+            }
+
+            if (!rawBio.isNullOrBlank() && !isAlreadyTarget) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(enabled = !isTranslating) {
+                            if (showTranslated) {
+                                showTranslated = false
+                            } else if (!translatedBio.isNullOrBlank()) {
+                                showTranslated = true
+                            } else {
+                                isTranslating = true
+                                coroutineScope.launch {
+                                    val result = com.example.data.TranslationHelper.translateText(rawBio, language)
+                                    translatedBio = result
+                                    showTranslated = true
+                                    isTranslating = false
+                                }
+                            }
+                        }
+                        .padding(horizontal = 6.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Language,
+                        contentDescription = "Translate",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = when {
+                            isTranslating -> com.example.ui.Translations.get(language, "translating_bio")
+                            showTranslated -> com.example.ui.Translations.get(language, "original_text")
+                            else -> com.example.ui.Translations.get(language, "translate_bio")
+                        },
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             Text(
-                text = artistInfo?.bio ?: "",
+                text = displayBioText,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f),
                 fontSize = 16.sp,
                 lineHeight = 24.sp

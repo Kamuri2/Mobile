@@ -9,13 +9,16 @@ import org.jaudiotagger.tag.Tag
 import org.jaudiotagger.tag.flac.FlacTag
 import org.jaudiotagger.tag.id3.AbstractID3v2Frame
 import org.jaudiotagger.tag.id3.AbstractID3v2Tag
+import org.jaudiotagger.tag.id3.framebody.FrameBodyCOMM
 import org.jaudiotagger.tag.id3.framebody.FrameBodySYLT
 import org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX
 import org.jaudiotagger.tag.id3.framebody.FrameBodyUSLT
 import org.jaudiotagger.tag.vorbiscomment.VorbisCommentTag
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
@@ -29,6 +32,13 @@ object AudioLyricsExtractor {
         val source: String
     )
 
+    /**
+     * Motor completo de extracción de letras:
+     * 1. Extractor directo binario/stream (ultra rápido, sin copiar archivos temporales, funciona en Android 10/11/12/13/14 con Scoped Storage).
+     * 2. Extractor JAudioTagger exhaustivo (MP3 USLT/SYLT/TXXX/COMM, FLAC VorbisComment, MP4 ©lyr).
+     * 3. Archivos adyacentes .lrc, .txt, .srt en el directorio del audio o subcarpeta Lyrics/.
+     * 4. Escáner profundo de paquetes Vorbis/Opus en contenedores OGG/Opus.
+     */
     fun extractLyrics(
         context: Context,
         audioUri: Uri,
@@ -36,29 +46,514 @@ object AudioLyricsExtractor {
         artist: String? = null,
         title: String? = null
     ): LyricsResult {
-        // 1. PRIMARY SOURCE: Embedded lyrics inside audio file tags via JAudioTagger
-        val embeddedResult = extractEmbeddedLyrics(context, audioUri, audioFilePath)
-        if (embeddedResult != null && !embeddedResult.lyrics.isNullOrBlank()) {
-            return embeddedResult
-        }
-
-        // 2. SECONDARY SOURCE: Sidecar file (.lrc, .txt, .srt, .vtt) adjacent to the audio track
+        // 1. Archivos .lrc o .txt adyacentes (ultrarrápido, mínimo consumo de memoria)
         val externalLyrics = checkAdjacentLyricsFile(audioFilePath)
-        if (externalLyrics != null && externalLyrics.isNotBlank()) {
+        if (externalLyrics != null && externalLyrics.isNotBlank() && !isCorruptedLyrics(externalLyrics)) {
             val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(externalLyrics)
-            return LyricsResult(lyrics = externalLyrics.trim(), isSynced = isSynced, source = "EXTERNAL_FILE")
+            Log.d(TAG, "Lyrics found via external file")
+            return LyricsResult(lyrics = cleanExtractedLyrics(externalLyrics), isSynced = isSynced, source = "EXTERNAL_FILE")
         }
 
-        // 3. TERTIARY SOURCE: Direct deep scan for Opus/Ogg Vorbis packets
+        // 2. Si existe ruta directa en disco, leer con JAudioTagger sin crear archivos temporales
+        if (!audioFilePath.isNullOrBlank() && File(audioFilePath).canRead()) {
+            val embeddedResult = extractEmbeddedLyrics(context, audioUri, audioFilePath)
+            if (embeddedResult != null && !embeddedResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(embeddedResult.lyrics)) {
+                Log.d(TAG, "Lyrics found via JAudioTagger (direct file): ${embeddedResult.source}")
+                return embeddedResult
+            }
+        }
+
+        // 3. Escaneo directo de cabeceras estructuradas (ID3v2, FLAC nativo, MP4) sin copiar archivo
+        val streamResult = scanStreamForLyrics(context, audioUri, audioFilePath)
+        if (streamResult != null && !streamResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(streamResult.lyrics)) {
+            Log.d(TAG, "Lyrics found via direct stream parser: ${streamResult.source}")
+            return streamResult
+        }
+
+        // 4. FOURTH SOURCE: Deep scan para paquetes Opus/Ogg Vorbis (verificando campos de letras explícitos)
         if (audioFilePath != null) {
             val deepScanResult = getOpusLyricsDeepScan(audioFilePath)
-            if (deepScanResult != null && !deepScanResult.lyrics.isNullOrBlank()) {
+            if (deepScanResult != null && !deepScanResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(deepScanResult.lyrics)) {
+                Log.d(TAG, "Lyrics found via Opus deep scan: ${deepScanResult.source}")
                 return deepScanResult
+            }
+        }
+
+        // 5. FIFTH SOURCE: Fallback JAudioTagger para URIs virtuales si todo lo anterior falló
+        if (audioFilePath.isNullOrBlank() && audioUri != Uri.EMPTY) {
+            val embeddedFallback = extractEmbeddedLyrics(context, audioUri, null)
+            if (embeddedFallback != null && !embeddedFallback.lyrics.isNullOrBlank() && !isCorruptedLyrics(embeddedFallback.lyrics)) {
+                return embeddedFallback
             }
         }
 
         return LyricsResult(lyrics = null, isSynced = false, source = "NONE")
     }
+
+    // =========================================================================
+    // 1. ESCÁNER DIRECTO DE CABECERAS Y MARCOS BINARIOS (ZERO FILE COPY)
+    // =========================================================================
+
+    private fun scanStreamForLyrics(context: Context, audioUri: Uri, audioFilePath: String?): LyricsResult? {
+        var inputStream: InputStream? = null
+        try {
+            if (audioUri != Uri.EMPTY) {
+                try {
+                    inputStream = context.contentResolver.openInputStream(audioUri)
+                } catch (e: Exception) {
+                    Log.d(TAG, "ContentResolver stream open failed: ${e.message}")
+                }
+            }
+            if (inputStream == null && !audioFilePath.isNullOrBlank()) {
+                try {
+                    val f = File(audioFilePath)
+                    if (f.exists() && f.canRead()) {
+                        inputStream = FileInputStream(f)
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "FileInputStream failed: ${e.message}")
+                }
+            }
+            if (inputStream == null) return null
+
+            // Leemos hasta 1MB iniciales de la pista para metadatos ID3/FLAC/MP4
+            val maxHeaderBytes = 1 * 1024 * 1024
+            val buffer = ByteArray(maxHeaderBytes)
+            var totalRead = 0
+            inputStream.use { input ->
+                while (totalRead < maxHeaderBytes) {
+                    val r = input.read(buffer, totalRead, maxHeaderBytes - totalRead)
+                    if (r <= 0) break
+                    totalRead += r
+                }
+            }
+
+            if (totalRead < 16) return null
+            val headerBytes = if (totalRead == maxHeaderBytes) buffer else buffer.copyOfRange(0, totalRead)
+
+            // A. Cabecera ID3v2 (MP3, WAV, FLAC empaquetado con ID3)
+            val id3Result = parseId3v2Bytes(headerBytes)
+            if (id3Result != null && !id3Result.lyrics.isNullOrBlank() && !isCorruptedLyrics(id3Result.lyrics)) {
+                return id3Result
+            }
+
+            // B. Cabecera nativa FLAC ("fLaC" con bloques VORBIS_COMMENT)
+            val flacLyrics = parseFlacBytes(headerBytes)
+            if (!flacLyrics.isNullOrBlank() && !isCorruptedLyrics(flacLyrics)) {
+                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(flacLyrics)
+                return LyricsResult(lyrics = flacLyrics, isSynced = isSynced, source = "DIRECT_FLAC_VORBIS")
+            }
+
+            // C. Átomo MP4/M4A ("©lyr" / "----")
+            val mp4Lyrics = parseMp4Bytes(headerBytes)
+            if (!mp4Lyrics.isNullOrBlank() && !isCorruptedLyrics(mp4Lyrics)) {
+                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(mp4Lyrics)
+                return LyricsResult(lyrics = mp4Lyrics, isSynced = isSynced, source = "DIRECT_MP4_LYR")
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "scanStreamForLyrics error: ${e.message}")
+        } finally {
+            try { inputStream?.close() } catch (_: Exception) {}
+        }
+        return null
+    }
+
+    /**
+     * Parsea etiquetas ID3v2 directamente desde bytes (versiones 2.2, 2.3 y 2.4).
+     * Extrae: USLT (Unsynced lyrics), ULT (ID3v2.2), SYLT (Synced lyrics), TXXX (con descripciones tipo LYRICS/LRC/SIMPLE), COMM.
+     */
+    fun parseId3v2Bytes(bytes: ByteArray): LyricsResult? {
+        if (bytes.size < 10) return null
+        if (bytes[0] != 0x49.toByte() || bytes[1] != 0x44.toByte() || bytes[2] != 0x33.toByte()) {
+            return null
+        }
+        val major = bytes[3].toInt() and 0xFF // 2, 3 o 4
+        val flags = bytes[5].toInt() and 0xFF
+        val hasExtended = (flags and 0x40) != 0
+
+        // Tamaño synchsafe (7 bits por byte)
+        val tagSize = ((bytes[6].toInt() and 0x7F) shl 21) or
+                      ((bytes[7].toInt() and 0x7F) shl 14) or
+                      ((bytes[8].toInt() and 0x7F) shl 7) or
+                      (bytes[9].toInt() and 0x7F)
+
+        val totalLimit = (10 + tagSize).coerceAtMost(bytes.size)
+        var offset = 10
+
+        // Saltar extended header si existe
+        if (hasExtended && major >= 3 && offset + 4 <= totalLimit) {
+            val extSize = if (major == 4) {
+                ((bytes[offset].toInt() and 0x7F) shl 21) or
+                ((bytes[offset+1].toInt() and 0x7F) shl 14) or
+                ((bytes[offset+2].toInt() and 0x7F) shl 7) or
+                (bytes[offset+3].toInt() and 0x7F)
+            } else {
+                ((bytes[offset].toInt() and 0xFF) shl 24) or
+                ((bytes[offset+1].toInt() and 0xFF) shl 16) or
+                ((bytes[offset+2].toInt() and 0xFF) shl 8) or
+                (bytes[offset+3].toInt() and 0xFF)
+            }
+            offset += (if (major == 4) extSize else extSize + 4).coerceAtMost(totalLimit - offset)
+        }
+
+        var candidateLyrics: String? = null
+
+        while (offset < totalLimit - 6) {
+            if (major == 2) {
+                // ID3v2.2: ID de 3 caracteres + tamaño de 3 bytes
+                if (offset + 6 > totalLimit) break
+                val id = String(bytes, offset, 3, Charsets.US_ASCII)
+                if (id.isBlank() || id[0] == '\u0000') break
+                val frameSize = ((bytes[offset+3].toInt() and 0xFF) shl 16) or
+                                ((bytes[offset+4].toInt() and 0xFF) shl 8) or
+                                (bytes[offset+5].toInt() and 0xFF)
+                offset += 6
+                if (frameSize <= 0 || offset + frameSize > totalLimit) break
+
+                if (id == "ULT") {
+                    val lyr = parseUsltFrame(bytes, offset, frameSize)
+                    if (!lyr.isNullOrBlank()) return LyricsResult(lyr, Regex("\\[\\d{2}:\\d{2}").containsMatchIn(lyr), "DIRECT_ID3v2.2_ULT")
+                } else if (id == "SLT") {
+                    val lyr = parseSyltFrame(bytes, offset, frameSize)
+                    if (!lyr.isNullOrBlank()) return LyricsResult(lyr, true, "DIRECT_ID3v2.2_SLT")
+                } else if (id == "TXX" || id == "COM") {
+                    val lyr = parseTxxxOrCommFrame(bytes, offset, frameSize, id == "COM")
+                    if (!lyr.isNullOrBlank() && candidateLyrics == null) candidateLyrics = lyr
+                }
+                offset += frameSize
+            } else {
+                // ID3v2.3 / ID3v2.4: ID de 4 caracteres + tamaño de 4 bytes + 2 bytes de flags
+                if (offset + 10 > totalLimit) break
+                val id = String(bytes, offset, 4, Charsets.US_ASCII)
+                if (id.isBlank() || id[0] == '\u0000') break
+                val frameSize = if (major == 4) {
+                    ((bytes[offset+4].toInt() and 0x7F) shl 21) or
+                    ((bytes[offset+5].toInt() and 0x7F) shl 14) or
+                    ((bytes[offset+6].toInt() and 0x7F) shl 7) or
+                    (bytes[offset+7].toInt() and 0x7F)
+                } else {
+                    ((bytes[offset+4].toInt() and 0xFF) shl 24) or
+                    ((bytes[offset+5].toInt() and 0xFF) shl 16) or
+                    ((bytes[offset+6].toInt() and 0xFF) shl 8) or
+                    (bytes[offset+7].toInt() and 0xFF)
+                }
+                offset += 10
+                if (frameSize <= 0 || offset + frameSize > totalLimit) break
+
+                if (id == "USLT") {
+                    val lyr = parseUsltFrame(bytes, offset, frameSize)
+                    if (!lyr.isNullOrBlank()) return LyricsResult(lyr, Regex("\\[\\d{2}:\\d{2}").containsMatchIn(lyr), "DIRECT_ID3v2_USLT")
+                } else if (id == "SYLT") {
+                    val lyr = parseSyltFrame(bytes, offset, frameSize)
+                    if (!lyr.isNullOrBlank()) return LyricsResult(lyr, true, "DIRECT_ID3v2_SYLT")
+                } else if (id == "TXXX" || id == "COMM") {
+                    val lyr = parseTxxxOrCommFrame(bytes, offset, frameSize, id == "COMM")
+                    if (!lyr.isNullOrBlank() && candidateLyrics == null) candidateLyrics = lyr
+                }
+                offset += frameSize
+            }
+        }
+
+        if (!candidateLyrics.isNullOrBlank()) {
+            val isSynced = Regex("\\[\\d{2}:\\d{2}").containsMatchIn(candidateLyrics)
+            return LyricsResult(candidateLyrics, isSynced, "DIRECT_ID3v2_TEXT_FRAME")
+        }
+
+        return null
+    }
+
+    private fun parseUsltFrame(bytes: ByteArray, offset: Int, size: Int): String? {
+        if (size < 5) return null
+        val encoding = bytes[offset].toInt() and 0xFF
+        // Saltar encoding (1 byte) + código de idioma ISO-639-2 (3 bytes)
+        var descEnd = offset + 4
+        if (encoding == 1 || encoding == 2) {
+            // UTF-16: delimitador de 2 bytes nulos alineados
+            while (descEnd + 1 < offset + size) {
+                if (bytes[descEnd] == 0.toByte() && bytes[descEnd + 1] == 0.toByte()) {
+                    descEnd += 2
+                    break
+                }
+                descEnd += 2
+            }
+        } else {
+            // ISO-8859-1 o UTF-8: delimitador de 1 byte nulo
+            while (descEnd < offset + size) {
+                if (bytes[descEnd] == 0.toByte()) {
+                    descEnd += 1
+                    break
+                }
+                descEnd += 1
+            }
+        }
+
+        val lyricsLen = (offset + size) - descEnd
+        if (lyricsLen <= 0) {
+            val fallbackLen = (offset + size) - (offset + 4)
+            if (fallbackLen > 0) {
+                val text = decodeWithEncoding(bytes, offset + 4, fallbackLen, encoding)
+                if (text.isNotBlank()) return cleanExtractedLyrics(text)
+            }
+            return null
+        }
+        val text = decodeWithEncoding(bytes, descEnd, lyricsLen, encoding)
+        if (text.isNotBlank()) return cleanExtractedLyrics(text)
+        return null
+    }
+
+    private fun parseTxxxOrCommFrame(bytes: ByteArray, offset: Int, size: Int, isComm: Boolean): String? {
+        if (size < 5) return null
+        val encoding = bytes[offset].toInt() and 0xFF
+        val startDesc = if (isComm) offset + 4 else offset + 1 // COMM tiene 3 bytes de idioma
+        if (startDesc >= offset + size) return null
+
+        var descEnd = startDesc
+        if (encoding == 1 || encoding == 2) {
+            while (descEnd + 1 < offset + size) {
+                if (bytes[descEnd] == 0.toByte() && bytes[descEnd + 1] == 0.toByte()) {
+                    descEnd += 2
+                    break
+                }
+                descEnd += 2
+            }
+        } else {
+            while (descEnd < offset + size) {
+                if (bytes[descEnd] == 0.toByte()) {
+                    descEnd += 1
+                    break
+                }
+                descEnd += 1
+            }
+        }
+
+        val descStr = decodeWithEncoding(bytes, startDesc, descEnd - startDesc, encoding).uppercase()
+        val textLen = (offset + size) - descEnd
+        if (textLen <= 0) return null
+
+        val text = decodeWithEncoding(bytes, descEnd, textLen, encoding)
+        if (text.isBlank()) return null
+
+        val isLyricsDesc = if (isComm) {
+            descStr == "LYRICS" || descStr == "LRC" || descStr == "SYNCEDLYRICS" || descStr == "UNSYNCEDLYRICS"
+        } else {
+            val isBlacklisted = descStr.contains("LYRICIST") || descStr.contains("AUTHOR") ||
+                descStr.contains("URL") || descStr.contains("SITE") || descStr.contains("ID") ||
+                descStr.contains("LANG") || descStr.contains("COPYRIGHT") || descStr.contains("SORT")
+            !isBlacklisted && (
+                descStr == "LYRICS" || descStr == "UNSYNCEDLYRICS" || descStr == "SYNCEDLYRICS" ||
+                descStr == "LRC" || descStr == "LYRICS_SYNCED" || descStr == "UNSYNCED LYRICS" || descStr == "SYNCED LYRICS" ||
+                (descStr.startsWith("LYRIC") && !descStr.contains("IST"))
+            )
+        }
+        val containsTimestamps = Regex("""\[\d{2}:\d{2}""").containsMatchIn(text)
+
+        if (isLyricsDesc || (containsTimestamps && !isCorruptedLyrics(text))) {
+            val cleaned = cleanExtractedLyrics(text)
+            if (cleaned.isNotBlank() && !isCorruptedLyrics(cleaned)) {
+                return cleaned
+            }
+        }
+        return null
+    }
+
+    private fun parseSyltFrame(bytes: ByteArray, offset: Int, size: Int): String? {
+        if (size < 6) return null
+        val syltSlice = bytes.copyOfRange(offset, offset + size)
+        val lrc = parseSyltToLrc(syltSlice)
+        return if (lrc.isNotBlank()) cleanExtractedLyrics(lrc) else null
+    }
+
+    /**
+     * Parsea bloques nativos FLAC (fLaC) y comentarios Vorbis.
+     */
+    fun parseFlacBytes(bytes: ByteArray): String? {
+        var pos = 0
+        // Omitir cabecera ID3v2 previa si existe al inicio del archivo FLAC
+        if (bytes.size >= 10 && bytes[0] == 0x49.toByte() && bytes[1] == 0x44.toByte() && bytes[2] == 0x33.toByte()) {
+            val tagSize = ((bytes[6].toInt() and 0x7F) shl 21) or
+                          ((bytes[7].toInt() and 0x7F) shl 14) or
+                          ((bytes[8].toInt() and 0x7F) shl 7) or
+                          (bytes[9].toInt() and 0x7F)
+            pos = 10 + tagSize
+        }
+        if (pos + 4 > bytes.size) return null
+        if (bytes[pos] != 'f'.code.toByte() || bytes[pos+1] != 'L'.code.toByte() ||
+            bytes[pos+2] != 'a'.code.toByte() || bytes[pos+3] != 'C'.code.toByte()) {
+            return null
+        }
+        pos += 4
+
+        while (pos + 4 <= bytes.size) {
+            val b0 = bytes[pos].toInt() and 0xFF
+            val isLast = (b0 and 0x80) != 0
+            val blockType = b0 and 0x7F
+            val blockLen = ((bytes[pos+1].toInt() and 0xFF) shl 16) or
+                           ((bytes[pos+2].toInt() and 0xFF) shl 8) or
+                           (bytes[pos+3].toInt() and 0xFF)
+            pos += 4
+            if (blockLen < 0 || pos + blockLen > bytes.size) break
+
+            if (blockType == 4) { // VORBIS_COMMENT block
+                val commentSlice = bytes.copyOfRange(pos, pos + blockLen)
+                val lyrics = parseVorbisCommentBlock(commentSlice)
+                if (!lyrics.isNullOrBlank()) return lyrics
+            }
+            pos += blockLen
+            if (isLast) break
+        }
+        return null
+    }
+
+    fun parseVorbisCommentBlock(block: ByteArray): String? {
+        if (block.size < 8) return null
+        fun readLE32(idx: Int): Int {
+            if (idx + 3 >= block.size) return 0
+            return (block[idx].toInt() and 0xFF) or
+                   ((block[idx+1].toInt() and 0xFF) shl 8) or
+                   ((block[idx+2].toInt() and 0xFF) shl 16) or
+                   ((block[idx+3].toInt() and 0xFF) shl 24)
+        }
+        var offset = 0
+        val vendorLen = readLE32(offset)
+        offset += 4 + vendorLen
+        if (offset + 4 > block.size) return null
+
+        val userCommentCount = readLE32(offset)
+        offset += 4
+
+        var candidateLyrics: String? = null
+
+        for (i in 0 until userCommentCount) {
+            if (offset + 4 > block.size) break
+            val commentLen = readLE32(offset)
+            offset += 4
+            if (commentLen < 0 || offset + commentLen > block.size) break
+
+            val commentSlice = block.copyOfRange(offset, offset + commentLen)
+            offset += commentLen
+
+            val commentStr = decodeTextSmart(commentSlice)
+            if (commentStr.contains("=")) {
+                val key = commentStr.substringBefore("=").trim().uppercase()
+                val value = commentStr.substringAfter("=").trim()
+                if (value.isNotBlank()) {
+                    val isBlacklistedKey = key.contains("LYRICIST") || key.contains("AUTHOR") ||
+                        key.contains("URL") || key.contains("SITE") || key.contains("ID") ||
+                        key.contains("LANG") || key.contains("COPYRIGHT") || key.contains("SORT")
+                    val isLyricsKey = !isBlacklistedKey && (
+                        key == "LYRICS" || key == "UNSYNCEDLYRICS" || key == "UNSYNCED LYRICS" ||
+                        key == "SYNCEDLYRICS" || key == "SYNCED LYRICS" || key == "LYRICS_SYNCED" ||
+                        key == "LRC" || key == "TEXT" || key == "USLT" || key == "SYLT" ||
+                        (key.startsWith("LYRIC") && !key.contains("IST"))
+                    )
+                    val hasTimestamps = Regex("""\[\d{2}:\d{2}""").containsMatchIn(value)
+
+                    if (isLyricsKey || (hasTimestamps && !isCorruptedLyrics(value))) {
+                        val cleaned = cleanExtractedLyrics(value)
+                        if (cleaned.isNotBlank() && !isCorruptedLyrics(cleaned)) {
+                            // Prioridad a letras sincronizadas/LRC con marcas de tiempo
+                            if (hasTimestamps) return cleaned
+                            if (candidateLyrics == null) candidateLyrics = cleaned
+                        }
+                    }
+                }
+            }
+        }
+        return candidateLyrics
+    }
+
+    /**
+     * Parsea átomos MP4/M4A ("©lyr" / "data").
+     */
+    fun parseMp4Bytes(bytes: ByteArray): String? {
+        if (bytes.size < 16) return null
+        val lyrMarker = byteArrayOf(0xA9.toByte(), 'l'.code.toByte(), 'y'.code.toByte(), 'r'.code.toByte())
+        var idx = 0
+        while (idx < bytes.size - 8) {
+            if (bytes[idx] == lyrMarker[0] && bytes[idx+1] == lyrMarker[1] &&
+                bytes[idx+2] == lyrMarker[2] && bytes[idx+3] == lyrMarker[3]) {
+                val atomStart = (idx - 4).coerceAtLeast(0)
+                val atomSize = ((bytes[atomStart].toInt() and 0xFF) shl 24) or
+                               ((bytes[atomStart+1].toInt() and 0xFF) shl 16) or
+                               ((bytes[atomStart+2].toInt() and 0xFF) shl 8) or
+                               (bytes[atomStart+3].toInt() and 0xFF)
+                val end = (atomStart + atomSize).coerceAtMost(bytes.size)
+                val dataMarker = "data".toByteArray(Charsets.US_ASCII)
+                var dIdx = idx + 4
+                while (dIdx < end - 12) {
+                    if (bytes[dIdx] == dataMarker[0] && bytes[dIdx+1] == dataMarker[1] &&
+                        bytes[dIdx+2] == dataMarker[2] && bytes[dIdx+3] == dataMarker[3]) {
+                        val payloadStart = dIdx + 12
+                        val payloadLen = end - payloadStart
+                        if (payloadLen > 0) {
+                            val text = decodeTextSmart(bytes.copyOfRange(payloadStart, end))
+                            if (text.isNotBlank()) return cleanExtractedLyrics(text)
+                        }
+                    }
+                    dIdx++
+                }
+            }
+            idx++
+        }
+        return null
+    }
+
+    /**
+     * Escaneo profundo por patrón de marcas de tiempo LRC [mm:ss.xx] en el búfer de metadatos.
+     */
+    fun scanBufferForLrc(bytes: ByteArray, limit: Int = bytes.size): String? {
+        if (limit < 30) return null
+        val maxSearch = limit.coerceAtMost(bytes.size)
+        val sampleText = decodeTextSmart(bytes.copyOfRange(0, maxSearch))
+        val matches = Regex("""\[\d{2}:\d{2}(?:[.:]\d{1,3})?\]""").findAll(sampleText).toList()
+        if (matches.size >= 3) {
+            val firstIdx = matches.first().range.first
+            val lines = sampleText.substring(firstIdx).lines()
+            val lrcLines = mutableListOf<String>()
+            for (line in lines) {
+                val t = line.trim()
+                if (t.matches(Regex("""^\[\d{2}:\d{2}.*""")) || (lrcLines.isNotEmpty() && t.isNotBlank())) {
+                    lrcLines.add(t)
+                } else if (lrcLines.size >= 4 && t.isBlank()) {
+                    break
+                }
+            }
+            if (lrcLines.size >= 3) {
+                val res = lrcLines.joinToString("\n").trim()
+                if (res.isNotBlank()) return cleanExtractedLyrics(res)
+            }
+        }
+        return null
+    }
+
+    private fun decodeWithEncoding(bytes: ByteArray, offset: Int, length: Int, encoding: Int): String {
+        if (length <= 0 || offset + length > bytes.size) return ""
+        val slice = bytes.copyOfRange(offset, offset + length)
+        return when (encoding) {
+            0 -> decodeTextSmart(slice) // ISO-8859-1 o Windows-1252
+            1 -> {
+                // UTF-16 con BOM (o fallback inteligente)
+                if (slice.size >= 2 && slice[0] == 0xFE.toByte() && slice[1] == 0xFF.toByte()) {
+                    String(slice, 2, slice.size - 2, Charsets.UTF_16BE)
+                } else if (slice.size >= 2 && slice[0] == 0xFF.toByte() && slice[1] == 0xFE.toByte()) {
+                    String(slice, 2, slice.size - 2, Charsets.UTF_16LE)
+                } else {
+                    decodeTextSmart(slice)
+                }
+            }
+            2 -> {
+                try { String(slice, Charsets.UTF_16BE) } catch (_: Exception) { decodeTextSmart(slice) }
+            }
+            3 -> {
+                try { String(slice, Charsets.UTF_8) } catch (_: Exception) { decodeTextSmart(slice) }
+            }
+            else -> decodeTextSmart(slice)
+        }.trim { it <= ' ' || it == '\u0000' }
+    }
+
+    // =========================================================================
+    // 2. ESCÁNER VÍA JAUDIOTAGGER (COMPLEMENTARIO)
+    // =========================================================================
 
     private fun extractEmbeddedLyrics(context: Context, audioUri: Uri, audioFilePath: String?): LyricsResult? {
         var tempFile: File? = null
@@ -66,7 +561,7 @@ object AudioLyricsExtractor {
             var fileToRead: File? = null
             if (audioFilePath != null) {
                 val direct = File(audioFilePath)
-                if (direct.exists() && direct.length() > 0) {
+                if (direct.exists() && direct.length() > 0 && direct.canRead()) {
                     fileToRead = direct
                 }
             }
@@ -75,13 +570,14 @@ object AudioLyricsExtractor {
                 fileToRead = tempFile
             }
 
-            if (fileToRead != null && fileToRead.exists()) {
+            if (fileToRead != null && fileToRead.exists() && fileToRead.length() > 0) {
                 val audioFile = AudioFileIO.read(fileToRead)
                 val tag: Tag? = audioFile.tag
 
                 if (tag != null) {
-                    // Check synchronized ID3v2 SYLT frame first (highest fidelity sync lyrics)
+                    // ID3v2 Tags
                     if (tag is AbstractID3v2Tag) {
+                        // 1. SYLT (Sincronizadas directas en ID3v2)
                         try {
                             val syltRaw = tag.getFrame("SYLT")
                             val syltList = when (syltRaw) {
@@ -96,66 +592,55 @@ object AudioLyricsExtractor {
                                     val lyricsBytes = syltBody.lyrics
                                     if (lyricsBytes != null && lyricsBytes.isNotEmpty()) {
                                         val parsedLrc = parseSyltToLrc(lyricsBytes)
-                                        if (parsedLrc.isNotBlank()) {
-                                            return LyricsResult(lyrics = parsedLrc, isSynced = true, source = "JAUDIOTAGGER_ID3_SYLT")
+                                        if (parsedLrc.isNotBlank() && !isCorruptedLyrics(parsedLrc)) {
+                                            return LyricsResult(lyrics = cleanExtractedLyrics(parsedLrc), isSynced = true, source = "JAUDIOTAGGER_ID3_SYLT")
                                         }
                                     }
                                 }
                             }
-                        } catch (e: Exception) {
-                            Log.d(TAG, "SYLT frame parsing failed: ${e.message}")
-                        }
+                        } catch (_: Exception) {}
 
-                        // Check ID3v2 USLT frame (Unsynchronized lyric/text transcription)
-                        try {
-                            val usltRaw = tag.getFrame("USLT")
-                            val usltList = when (usltRaw) {
-                                is List<*> -> usltRaw
-                                null -> emptyList()
-                                else -> listOf(usltRaw)
-                            }
-                            for (frameObj in usltList) {
-                                val usltFrame = frameObj as? AbstractID3v2Frame ?: continue
-                                if (usltFrame.body is FrameBodyUSLT) {
-                                    val lyricText = (usltFrame.body as FrameBodyUSLT).lyric
-                                    if (!lyricText.isNullOrBlank()) {
-                                        val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(lyricText)
-                                        return LyricsResult(lyrics = lyricText.trim(), isSynced = isSynced, source = "JAUDIOTAGGER_ID3_USLT")
+                        // 2. USLT / ULT (No sincronizadas o LRC incrustado en USLT como hace Musicolet)
+                        val usltKeys = listOf("USLT", "ULT")
+                        for (key in usltKeys) {
+                            try {
+                                val usltRaw = tag.getFrame(key)
+                                val usltList = when (usltRaw) {
+                                    is List<*> -> usltRaw
+                                    null -> emptyList()
+                                    else -> listOf(usltRaw)
+                                }
+                                for (frameObj in usltList) {
+                                    val usltFrame = frameObj as? AbstractID3v2Frame ?: continue
+                                    if (usltFrame.body is FrameBodyUSLT) {
+                                        val body = usltFrame.body as FrameBodyUSLT
+                                        val lyricText = body.lyric.takeIf { !it.isNullOrBlank() }
+                                            ?: (if (body.description != null && (body.description.contains("\n") || Regex("\\[\\d{2}:\\d{2}").containsMatchIn(body.description))) body.description else null)
+                                        if (!lyricText.isNullOrBlank()) {
+                                            val clean = cleanExtractedLyrics(lyricText)
+                                            if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                                return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_ID3_$key")
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        } catch (e: Exception) {
-                            Log.d(TAG, "USLT frame check failed: ${e.message}")
+                            } catch (_: Exception) {}
                         }
-                    }
 
-                    // FieldKey.LYRICS is jaudiotagger's standard mapping for MP3 (USLT), FLAC/OGG (LYRICS), MP4 (©lyr)
-                    try {
-                        val standardLyrics = tag.getFirst(FieldKey.LYRICS)
-                        if (!standardLyrics.isNullOrBlank()) {
-                            val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(standardLyrics)
-                            return LyricsResult(lyrics = standardLyrics.trim(), isSynced = isSynced, source = "JAUDIOTAGGER_FIELD_LYRICS")
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "tag.getFirst(FieldKey.LYRICS) failed: ${e.message}")
-                    }
-
-                    // For FLAC & Vorbis Comment tags: check specific tags: LYRICS, UNSYNCEDLYRICS, UNSYNCED_LYRICS
-                    if (tag is FlacTag || tag is VorbisCommentTag) {
-                        val candidateKeys = listOf("LYRICS", "UNSYNCEDLYRICS", "UNSYNCED_LYRICS", "SYNCEDLYRICS", "TEXT", "LYRIC")
-                        for (key in candidateKeys) {
-                            try {
-                                val valText = tag.getFirst(key)
-                                if (!valText.isNullOrBlank()) {
-                                    val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(valText)
-                                    return LyricsResult(lyrics = valText.trim(), isSynced = isSynced, source = "JAUDIOTAGGER_VORBIS_$key")
+                        // 3. FieldKey.LYRICS mapeo estándar JAudioTagger
+                        try {
+                            val standardLyrics = tag.getFirst(FieldKey.LYRICS)
+                            if (!standardLyrics.isNullOrBlank()) {
+                                val clean = cleanExtractedLyrics(standardLyrics)
+                                if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                    val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                    return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_FIELD_LYRICS")
                                 }
-                            } catch (e: Exception) {}
-                        }
-                    }
+                            }
+                        } catch (_: Exception) {}
 
-                    // Check ID3v2 TXXX user-defined text frames (often used for UNSYNCEDLYRICS)
-                    if (tag is AbstractID3v2Tag) {
+                        // 4. TXXX (User frames: LYRICS, UNSYNCEDLYRICS, SYNCEDLYRICS, LRC)
                         try {
                             val txxxFrames = tag.getFrame("TXXX")
                             if (txxxFrames != null) {
@@ -164,84 +649,201 @@ object AudioLyricsExtractor {
                                     val txxxFrame = frame as? AbstractID3v2Frame
                                     if (txxxFrame?.body is FrameBodyTXXX) {
                                         val body = txxxFrame.body as FrameBodyTXXX
-                                        if (body.description.equals("LYRICS", ignoreCase = true) ||
-                                            body.description.equals("UNSYNCEDLYRICS", ignoreCase = true) ||
-                                            body.description.equals("UNSYNCED_LYRICS", ignoreCase = true) ||
-                                            body.description.equals("SYNCEDLYRICS", ignoreCase = true)
-                                        ) {
+                                        val desc = body.description.uppercase()
+                                        val isBlacklistedDesc = desc.contains("LYRICIST") || desc.contains("AUTHOR") ||
+                                            desc.contains("URL") || desc.contains("SITE") || desc.contains("ID") ||
+                                            desc.contains("LANG") || desc.contains("COPYRIGHT") || desc.contains("SORT")
+                                        val isLyricsDesc = !isBlacklistedDesc && (
+                                            desc == "LYRICS" || desc == "UNSYNCEDLYRICS" || desc == "SYNCEDLYRICS" ||
+                                            desc == "LRC" || desc == "LYRICS_SYNCED" || desc == "UNSYNCED LYRICS" || desc == "SYNCED LYRICS" ||
+                                            (desc.startsWith("LYRIC") && !desc.contains("IST"))
+                                        )
+                                        if (isLyricsDesc) {
                                             val lyricText = body.text
                                             if (!lyricText.isNullOrBlank()) {
-                                                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(lyricText)
-                                                return LyricsResult(lyrics = lyricText.trim(), isSynced = isSynced, source = "JAUDIOTAGGER_ID3_TXXX")
+                                                val clean = cleanExtractedLyrics(lyricText)
+                                                if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                                    val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                                    return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_ID3_TXXX")
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        } catch (e: Exception) {
-                            Log.d(TAG, "TXXX check failed: ${e.message}")
+                        } catch (_: Exception) {}
+
+                        // 5. COMM (Comentarios SOLO si contienen marcas de tiempo o descripción explícita de letra)
+                        try {
+                            val commFrames = tag.getFrame("COMM")
+                            if (commFrames != null) {
+                                val framesList = if (commFrames is List<*>) commFrames else listOf(commFrames)
+                                for (frame in framesList) {
+                                    val commFrame = frame as? AbstractID3v2Frame
+                                    if (commFrame?.body is FrameBodyCOMM) {
+                                        val body = commFrame.body as FrameBodyCOMM
+                                        val desc = body.description.uppercase()
+                                        val text = body.text
+                                        if (!text.isNullOrBlank() && (desc == "LYRICS" || Regex("\\[\\d{2}:\\d{2}").containsMatchIn(text))) {
+                                            val clean = cleanExtractedLyrics(text)
+                                            if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                                return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_ID3_COMM")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    } else {
+                        // FieldKey.LYRICS para FLAC, MP4 ©lyr, OGG Vorbis
+                        try {
+                            val standardLyrics = tag.getFirst(FieldKey.LYRICS)
+                            if (!standardLyrics.isNullOrBlank()) {
+                                val clean = cleanExtractedLyrics(standardLyrics)
+                                if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                    val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                    return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_FIELD_LYRICS")
+                                }
+                            }
+                        } catch (_: Exception) {}
+                    }
+
+                    // Vorbis Comments (FLAC y OGG) - Filtrando claves residuales como COMMENT o DESCRIPTION
+                    if (tag is FlacTag || tag is VorbisCommentTag) {
+                        val candidateKeys = listOf(
+                            "LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS", "SYNCEDLYRICS",
+                            "SYNCED LYRICS", "LYRICS_SYNCED", "LRC"
+                        )
+                        for (key in candidateKeys) {
+                            try {
+                                val valText = tag.getFirst(key)
+                                if (!valText.isNullOrBlank()) {
+                                    val clean = cleanExtractedLyrics(valText)
+                                    if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                        val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                        return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_VORBIS_$key")
+                                    }
+                                }
+                            } catch (_: Exception) {}
                         }
                     }
 
-                    // General fields iterator fallback
+                    // Iteración estructurada de campos de la etiqueta (evitando volcados de depuración field.toString())
                     try {
                         val fields = tag.fields
                         while (fields.hasNext()) {
                             val field = fields.next()
-                            val lowerId = field.id.lowercase()
-                            if (lowerId.contains("lyric") || lowerId.contains("sylt") || lowerId.contains("uslt")) {
-                                if (!field.isBinary) {
-                                    val content = field.toString()
-                                    if (!content.isNullOrBlank() && content.length > 15) {
-                                        val cleanContent = tag.getFirst(field.id).takeIf { it.isNotBlank() } ?: content
-                                        val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(cleanContent)
-                                        return LyricsResult(lyrics = cleanContent.trim(), isSynced = isSynced, source = "JAUDIOTAGGER_FIELD_${field.id.uppercase()}")
+                            val idUpper = field.id.uppercase()
+                            val isBlacklistedField = idUpper.contains("LYRICIST") || idUpper.contains("AUTHOR") ||
+                                idUpper.contains("URL") || idUpper.contains("SITE") || idUpper.contains("ID") ||
+                                idUpper.contains("LANG") || idUpper.contains("COPYRIGHT") || idUpper.contains("SORT")
+                            val isAcceptedField = !isBlacklistedField && (
+                                idUpper == "USLT" || idUpper == "ULT" || idUpper == "SYLT" || idUpper == "LRC" ||
+                                idUpper == "LYRICS" || idUpper == "UNSYNCEDLYRICS" || idUpper == "UNSYNCED LYRICS" ||
+                                idUpper == "SYNCEDLYRICS" || idUpper == "SYNCED LYRICS" || idUpper == "LYRICS_SYNCED" ||
+                                (idUpper.startsWith("LYRIC") && !idUpper.contains("IST"))
+                            )
+                            if (isAcceptedField) {
+                                val content = when {
+                                    field is org.jaudiotagger.tag.TagTextField -> field.content
+                                    field is AbstractID3v2Frame && field.body is FrameBodyUSLT -> (field.body as FrameBodyUSLT).lyric
+                                    field is AbstractID3v2Frame && field.body is FrameBodySYLT -> parseSyltToLrc((field.body as FrameBodySYLT).lyrics ?: ByteArray(0))
+                                    else -> null
+                                }
+                                if (!content.isNullOrBlank() && content.length > 10) {
+                                    val clean = cleanExtractedLyrics(content)
+                                    if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                        val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                        return LyricsResult(lyrics = clean, isSynced = isSynced, source = "JAUDIOTAGGER_FIELD_${field.id.uppercase()}")
                                     }
                                 }
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "General fields iterator failed: ${e.message}")
-                    }
+                    } catch (_: Exception) {}
                 }
             }
         } catch (e: Exception) {
             Log.d(TAG, "extractEmbeddedLyrics error: ${e.message}")
         } finally {
-            tempFile?.delete()
+            try { tempFile?.delete() } catch (_: Exception) {}
         }
         return null
     }
 
-    private fun parseSyltToLrc(lyricsBytes: ByteArray): String {
+    fun parseSyltToLrc(lyricsBytes: ByteArray): String {
         try {
-            val builder = java.lang.StringBuilder()
+            if (lyricsBytes.size < 6) return ""
             var offset = 0
+            val encoding = lyricsBytes[0].toInt() and 0xFF
+            val isUtf16 = encoding == 1 || encoding == 2
+
+            // Si la cabecera SYLT está presente (códigos de idioma en bytes 1..3 son letras ASCII como 'eng'):
+            val hasHeader = lyricsBytes.size >= 6 &&
+                    lyricsBytes[1].toInt() in 65..122 &&
+                    lyricsBytes[2].toInt() in 65..122 &&
+                    lyricsBytes[3].toInt() in 65..122
+
+            if (hasHeader) {
+                // Saltar encoding (1) + language (3) + format (1) + content type (1) = 6 bytes
+                offset = 6
+                // Saltar descriptor de contenido (terminado en null)
+                if (isUtf16) {
+                    while (offset + 1 < lyricsBytes.size) {
+                        if (lyricsBytes[offset] == 0.toByte() && lyricsBytes[offset + 1] == 0.toByte()) {
+                            offset += 2
+                            break
+                        }
+                        offset += 2
+                    }
+                } else {
+                    while (offset < lyricsBytes.size) {
+                        if (lyricsBytes[offset] == 0.toByte()) {
+                            offset += 1
+                            break
+                        }
+                        offset += 1
+                    }
+                }
+            }
+
+            val builder = java.lang.StringBuilder()
             while (offset < lyricsBytes.size) {
                 var textEnd = offset
-                while (textEnd < lyricsBytes.size && lyricsBytes[textEnd].toInt() != 0) {
-                    textEnd++
+                if (isUtf16) {
+                    while (textEnd + 1 < lyricsBytes.size) {
+                        if (lyricsBytes[textEnd] == 0.toByte() && lyricsBytes[textEnd + 1] == 0.toByte()) {
+                            break
+                        }
+                        textEnd += 2
+                    }
+                } else {
+                    while (textEnd < lyricsBytes.size && lyricsBytes[textEnd] != 0.toByte()) {
+                        textEnd++
+                    }
                 }
                 if (textEnd >= lyricsBytes.size) break
 
                 val lineBytes = lyricsBytes.copyOfRange(offset, textEnd)
                 val text = decodeTextSmart(lineBytes).trim()
 
-                offset = textEnd + 1
+                offset = if (isUtf16) textEnd + 2 else textEnd + 1
                 if (offset + 3 < lyricsBytes.size) {
                     val t1 = lyricsBytes[offset].toInt() and 0xFF
                     val t2 = lyricsBytes[offset + 1].toInt() and 0xFF
                     val t3 = lyricsBytes[offset + 2].toInt() and 0xFF
                     val t4 = lyricsBytes[offset + 3].toInt() and 0xFF
-                    val timestampMs = (t1 shl 24) or (t2 shl 16) or (t3 shl 8) or t4
+                    val timestampMs = ((t1.toLong() shl 24) or (t2.toLong() shl 16) or (t3.toLong() shl 8) or t4.toLong())
 
-                    val minutes = timestampMs / 60000
-                    val seconds = (timestampMs % 60000) / 1000
-                    val hundreths = (timestampMs % 1000) / 10
+                    if (timestampMs in 0..86_400_000L) {
+                        val minutes = timestampMs / 60000
+                        val seconds = (timestampMs % 60000) / 1000
+                        val hundredths = (timestampMs % 1000) / 10
 
-                    val timeStr = String.format("[%02d:%02d.%02d]", minutes, seconds, hundreths)
-                    if (text.isNotBlank()) {
-                        builder.append(timeStr).append(text).append("\n")
+                        val timeStr = String.format("[%02d:%02d.%02d]", minutes, seconds, hundredths)
+                        if (text.isNotBlank() && !isCorruptedLyrics(text)) {
+                            builder.append(timeStr).append(text).append("\n")
+                        }
                     }
                     offset += 4
                 } else {
@@ -260,17 +862,24 @@ object AudioLyricsExtractor {
         val parentDir = audioFile.parentFile ?: return null
         val baseName = audioFile.nameWithoutExtension
         val extensions = listOf("lrc", "txt", "srt", "vtt")
-        for (ext in extensions) {
-            val candidate = File(parentDir, "$baseName.$ext")
-            if (candidate.exists() && candidate.canRead()) {
-                val bytes = try { candidate.readBytes() } catch (e: Exception) { null }
-                if (bytes != null && bytes.isNotEmpty()) {
-                    val decoded = decodeTextSmart(bytes)
-                    if (decoded.isNotBlank()) {
-                        return if (ext == "srt" || ext == "vtt") {
-                            convertSubtitleToLrc(decoded)
-                        } else {
-                            decoded
+
+        // Buscar en la misma carpeta y en subcarpeta Lyrics/ o lrc/
+        val candidateDirs = listOf(parentDir, File(parentDir, "Lyrics"), File(parentDir, "lyrics"), File(parentDir, "LRC"))
+
+        for (dir in candidateDirs) {
+            if (!dir.exists() || !dir.isDirectory) continue
+            for (ext in extensions) {
+                val candidate = File(dir, "$baseName.$ext")
+                if (candidate.exists() && candidate.canRead()) {
+                    val bytes = try { candidate.readBytes() } catch (e: Exception) { null }
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        val decoded = decodeTextSmart(bytes)
+                        if (decoded.isNotBlank()) {
+                            return if (ext == "srt" || ext == "vtt") {
+                                convertSubtitleToLrc(decoded)
+                            } else {
+                                decoded
+                            }
                         }
                     }
                 }
@@ -281,7 +890,7 @@ object AudioLyricsExtractor {
 
     /**
      * Decodificación inteligente y tolerante a fallos para letras en múltiples codificaciones:
-     * UTF-8 (con y sin BOM), UTF-16 LE/BE, Windows-1252, ISO-8859-1 (español/acentos), GBK, Shift-JIS.
+     * UTF-8 (con y sin BOM), UTF-16 LE/BE, Windows-1252, ISO-8859-1 (acentos en español: á, é, í, ó, ú, ñ).
      */
     fun decodeTextSmart(bytes: ByteArray): String {
         if (bytes.isEmpty()) return ""
@@ -305,23 +914,22 @@ object AudioLyricsExtractor {
                 .onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
             val charBuffer = decoder.decode(ByteBuffer.wrap(bytes))
-            return charBuffer.toString().trim()
-        } catch (e: Exception) {
-            // No es UTF-8 puro, pasar a fallbacks
-        }
+            val res = charBuffer.toString().trim()
+            if (res.isNotBlank()) return res
+        } catch (_: Exception) {}
 
-        // 5. Windows-1252 (cubre acentos en español, portugués, francés: á, é, í, ó, ú, ñ, etc.)
+        // 5. Windows-1252 (acentos latinos y signos especiales)
         try {
             val win1252 = Charset.forName("Windows-1252")
             val decoded = String(bytes, win1252).trim()
-            if (decoded.isNotBlank()) return decoded
-        } catch (e: Exception) {}
+            if (decoded.isNotBlank() && !decoded.contains("\uFFFD")) return decoded
+        } catch (_: Exception) {}
 
         // 6. ISO-8859-1 estándar
         try {
             val decoded = String(bytes, Charsets.ISO_8859_1).trim()
             if (decoded.isNotBlank()) return decoded
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
 
         // 7. Fallback general a UTF-8 reemplazando caracteres inválidos
         return String(bytes, Charsets.UTF_8).trim()
@@ -374,7 +982,7 @@ object AudioLyricsExtractor {
                     }
                 }
             }
-            val temp = File.createTempFile("audio_header", ext, context.cacheDir)
+            val temp = File.createTempFile("audio_scan_", ext, context.cacheDir)
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(temp).use { output ->
                     input.copyTo(output)
@@ -474,10 +1082,16 @@ object AudioLyricsExtractor {
                         pOffset += commentLen
 
                         val lower = commentStr.lowercase()
-                        if (lower.startsWith("lyrics=") || lower.startsWith("sylt=") || lower.startsWith("uslt=") || lower.startsWith("text=")) {
+                        val isBlacklisted = lower.contains("lyricist") || lower.contains("author") || lower.contains("url") ||
+                            lower.contains("site") || lower.contains("id") || lower.contains("copyright")
+                        if (!isBlacklisted && (lower.startsWith("lyrics=") || lower.startsWith("sylt=") || lower.startsWith("uslt=") ||
+                            lower.startsWith("unsyncedlyrics=") || lower.startsWith("syncedlyrics=") || lower.startsWith("lrc="))) {
                             val content = commentStr.substring(commentStr.indexOf('=') + 1).trim()
-                            val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(content)
-                            return LyricsResult(lyrics = content, isSynced = isSynced, source = "OPUS_TAGS_PARSER")
+                            val clean = cleanExtractedLyrics(content)
+                            if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
+                                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
+                                return LyricsResult(lyrics = clean, isSynced = isSynced, source = "OPUS_TAGS_PARSER")
+                            }
                         }
                     }
                 }
@@ -486,5 +1100,251 @@ object AudioLyricsExtractor {
             e.printStackTrace()
         }
         return null
+    }
+
+    /**
+     * Valida si un texto recuperado como letra es en realidad datos residuales, metadatos de ripeo,
+     * volcados de depuración de frames o ruido binario SIN contenido real de canciones.
+     */
+    fun isCorruptedLyrics(lyrics: String?): Boolean {
+        if (lyrics.isNullOrBlank()) return true
+        val trimmed = lyrics.trim()
+        val len = trimmed.length
+
+        // 1. Longitud mínima insuficiente para cualquier letra
+        if (len < 3) return true
+
+        // 2. Contiene demasiados caracteres de reemplazo Unicode (\uFFFD) producto de mala decodificación
+        if (trimmed.count { it == '\uFFFD' } >= 4) return true
+
+        // 3. Descriptores / palabras clave únicas o etiquetas de metadatos prohibidas
+        val singleBadTokens = setOf(
+            "eng", "spa", "und", "xxx", "lyrics", "lyric", "text", "none", "unknown",
+            "simple", "synced", "unsynced", "no lyrics", "null", "description",
+            "comment", "comments", "notes", "information", "soundcheck", "itunnorm",
+            "itunsmpb", "itunpgap", "accuraterip", "musicbrainz", "freedb", "cddb",
+            "track", "default", "untitled", "stereo", "mono", "audio", "flac", "mp3",
+            "uslt", "sylt", "comm", "txxx", "cover", "front", "back", "album", "artist",
+            "title", "genre", "year", "composer", "lyricist", "performer", "producer",
+            "encoder", "encoding", "settings", "media", "format", "source", "author"
+        )
+        if (singleBadTokens.contains(trimmed.lowercase())) return true
+
+        // 4. Volcado de inspección de clases o frames de JAudioTagger
+        if (trimmed.startsWith("Frame:") || trimmed.startsWith("org.jaudiotagger") ||
+            trimmed.startsWith("AbstractID3v2Frame") || trimmed.contains("FrameBodyUSLT") ||
+            trimmed.contains("FrameBodySYLT") || trimmed.contains("FrameBodyCOMM") ||
+            trimmed.contains("FrameBodyTXXX")) {
+            return true
+        }
+
+        // 5. SoundCheck / Normalización / ReplayGain
+        val soundCheckPattern = Regex("""(?i)^[0-9a-f]{8}(?:\s+[0-9a-f]{8}){2,}""")
+        if (soundCheckPattern.containsMatchIn(trimmed)) return true
+        if (trimmed.matches(Regex("""(?i)^00000000\s+[0-9a-f]{8}.*"""))) return true
+        if (trimmed.matches(Regex("""(?i)^[+-]?\d+(?:\.\d+)?\s*dB(?:\s+[+-]?\d+(?:\.\d+)?)*$"""))) return true
+
+        // 6. UUIDs, Hashes y Códigos de Identificación (ISRC, AcoustID, Barcode, etc.)
+        if (trimmed.matches(Regex("""^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"""))) return true
+        if (trimmed.matches(Regex("""(?i)^[a-z]{2}-?[a-z0-9]{3}-?\d{2}-?\d{5}$"""))) return true
+        if (trimmed.matches(Regex("""^[0-9a-fA-F]{32,64}$"""))) return true
+
+        // 7. URLs o dominios solos sin letra real
+        if (trimmed.matches(Regex("""(?i)^https?://[^\s]+$""")) || trimmed.matches(Regex("""(?i)^www\.[a-z0-9.-]+\.[a-z]{2,}(?:/[^\s]*)?$"""))) return true
+
+        // 8. Ripeadores, Encoders y Software sin contenido lírico
+        val encoderPattern = Regex("""(?i)^\s*(?:Exact\s*Audio\s*Copy|LAME|Lavf|Audiograbber|dBpoweramp|Ripped\s*by|Encoded\s*by|Track\s*\d+|CD\s*Track|EAC\s*v?\d+|CDex|FLAC\s*\d+).*""")
+        if (encoderPattern.matches(trimmed) && !trimmed.contains("\n")) return true
+
+        // 9. Copyright / Licencia sola de una línea
+        if (trimmed.matches(Regex("""(?i)^\s*(?:\(c\)|copyright|\(p\)|under\s*license|all\s*rights\s*reserved).{0,100}$"""))) return true
+
+        // 10. Si contiene marcas de tiempo LRC válidas ([mm:ss)
+        val hasLrcTimestamps = Regex("""\[\d{2}:\d{2}""").containsMatchIn(trimmed)
+        if (hasLrcTimestamps) {
+            // Verificar que no sea ÚNICAMENTE cabeceras [ti:...], [ar:...] o publicidad
+            val nonHeaderLines = trimmed.lines().map { it.trim() }.filter { line ->
+                line.isNotBlank() &&
+                !line.matches(Regex("""(?i)^\[\s*[a-zA-Z_ ]{1,24}\s*:[^\]]*\]$""")) &&
+                !line.matches(Regex("""(?i)^\[\d{2}:\d{2}(?:[.:]\d{1,3})?\]\s*(?:synced\s*by|lyrics\s*(?:provided\s*)?by|created\s*by|editor|qq\s*music|musixmatch|minilyrics|lrc\s*maker|www\.|https?://).*"""))
+            }
+            if (nonHeaderLines.isEmpty()) return true
+            return false
+        }
+
+        // 11. Para texto plano SIN marcas de tiempo (letras estáticas no sincronizadas):
+        val meaningfulLines = trimmed.lines()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                !line.matches(Regex("""(?i)^\[\s*[a-zA-Z_ ]{1,24}\s*:[^\]]*\]$""")) &&
+                !line.matches(Regex("""(?i)^(?:ti|ar|al|by|offset|re|ve|length|artist|album|title|composer|lyricist|genre|year|comment|soundcheck|itunnorm)\s*:.*"""))
+            }
+
+        // Si todas las líneas eran cabeceras
+        if (meaningfulLines.isEmpty()) return true
+
+        // Si es solo 1 sola línea corta (menor a 60 caracteres o menos de 8 palabras):
+        // A menos que sea explícitamente "Instrumental", un texto tan corto es casi con certeza
+        // el nombre de un compositor ("Ludwig Göransson"), un comentario residual ("Great song"),
+        // una categoría ("Pop") o residuo de etiqueta.
+        if (meaningfulLines.size == 1) {
+            val single = meaningfulLines.first()
+            if (single.equals("Instrumental", ignoreCase = true) || single.equals("[Instrumental]", ignoreCase = true)) {
+                return false // Instrumental legítimo
+            }
+            val wordCount = single.split(Regex("""\s+""")).count { it.isNotBlank() }
+            if (single.length < 60 || wordCount < 8) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Limpia profundamente las letras extraídas:
+     * - Extrae el contenido real de volcados de depuración ("Frame: USLT: Description=...; Lyrics=...", "Description=; Lyrics=...").
+     * - Remueve prefijos de idioma ("eng||", "spa||", "eng|", etc.).
+     * - Remueve campos residuales ("Description: ", "Language: ").
+     * - Limpia caracteres nulos \u0000, marcas BOM y caracteres de control binarios.
+     * - Repara posibles errores de codificación Mojibake.
+     * - Descarta volcados hexadecimales residuales.
+     */
+    fun cleanExtractedLyrics(raw: String): String {
+        if (raw.isBlank()) return ""
+        var cleaned = raw.trim()
+
+        // 1. Extraer letra de volcados de depuración de JAudioTagger / ID3v2 si existen
+        val jaudioMatch = Regex("""(?i)(?:Frame:\s*[A-Z0-9]{3,4}:)?\s*(?:Description\s*=\s*[^;]*;)?\s*(?:Lyrics?|Text)\s*[:=]\s*["']?([\s\S]+?)(?:["']?\s*(?:;|\z))""").find(cleaned)
+        if (jaudioMatch != null) {
+            val candidate = jaudioMatch.groupValues[1].trim()
+            if (candidate.isNotBlank()) {
+                cleaned = candidate
+            }
+        }
+
+        // Si aún contiene prefijo "Lyrics=" o "Lyrics:", extraer lo que sigue
+        if (cleaned.contains("Lyrics=", ignoreCase = true) || cleaned.contains("Lyrics:", ignoreCase = true)) {
+            val after = cleaned.substringAfter("Lyrics=", "").ifBlank {
+                cleaned.substringAfter("lyrics=", "").ifBlank {
+                    cleaned.substringAfter("Lyrics:", "").ifBlank {
+                        cleaned.substringAfter("lyrics:", "")
+                    }
+                }
+            }.trim().trim('"', '\'', ';')
+            if (after.isNotBlank()) {
+                cleaned = after
+            }
+        }
+
+        // 2. Manejo de delimitador || de JAudioTagger / ID3v2 (ej: "eng||[00:12.00]Letra" o "eng||Description||Letra")
+        if (cleaned.contains("||")) {
+            val parts = cleaned.split("||").map { it.trim() }.filter { it.isNotBlank() }
+            if (parts.isNotEmpty()) {
+                val filteredParts = parts.filterNot { part ->
+                    val lower = part.lowercase()
+                    lower == "eng" || lower == "spa" || lower == "xxx" || lower == "und" ||
+                    lower == "jpn" || lower == "ger" || lower == "fra" || lower == "ita" ||
+                    lower == "chi" || lower == "zho" || lower == "rus" ||
+                    lower == "description" || lower == "comment" || lower == "comments" ||
+                    lower == "lyrics" || lower == "unsynced" || lower == "synced" ||
+                    lower == "soundcheck" || lower == "itunnorm" || lower == "itunsmpb" ||
+                    lower == "null" || lower.matches(Regex("""(?i)^[0-9a-f]{8}(?:\s+[0-9a-f]{8})*"""))
+                }
+                val bestPart = filteredParts.maxByOrNull { part ->
+                    var score = part.length
+                    if (part.contains("\n")) score += 300
+                    if (Regex("""\[\d{2}:\d{2}""").containsMatchIn(part)) score += 500
+                    score
+                }
+                if (bestPart != null && bestPart.length > 3) {
+                    cleaned = bestPart
+                } else {
+                    cleaned = ""
+                }
+            }
+        }
+
+        // 3. Limpiar prefijos de idioma y descripción comunes
+        val prefixes = listOf(
+            "eng||", "spa||", "xxx||", "und||", "jpn||", "ger||", "fra||", "ita||", "chi||", "rus||", "||",
+            "eng|", "spa|", "jpn|", "xxx|", "XXX|", "ger|", "fra|", "ita|", "und|", "chi|", "zho|", "rus|",
+            "Simple|", "Synced|", "Unsynced|", "lyrics|", "Lyrics|",
+            "Description: ", "Description=", "Description: ;", "Description=;", "Description:",
+            "Comment: ", "Comment=", "Comments: ", "Comments=",
+            "Language: eng", "Language: spa", "Language: xxx", "Language: und",
+            "Lyrics: ", "Lyric: ", "Lyrics=", "Lyric=", "Text: ", "Text="
+        )
+        var changed = true
+        while (changed) {
+            changed = false
+            for (prefix in prefixes) {
+                if (cleaned.startsWith(prefix, ignoreCase = true)) {
+                    cleaned = cleaned.substring(prefix.length).trim()
+                    changed = true
+                }
+            }
+        }
+
+        // 4. Si el texto resultante está envuelto en comillas residuales o termina en punto y coma residual, removerlos
+        cleaned = cleaned.trim().trim(';', ',')
+        if (cleaned.startsWith("\"") && cleaned.endsWith("\"") && cleaned.length >= 2) {
+            cleaned = cleaned.substring(1, cleaned.length - 1).trim()
+        }
+        if (cleaned.startsWith("'") && cleaned.endsWith("'") && cleaned.length >= 2) {
+            cleaned = cleaned.substring(1, cleaned.length - 1).trim()
+        }
+
+        // 5. Eliminar caracteres nulos \u0000, BOM (\uFEFF, \uFFFE) y caracteres de control binarios
+        cleaned = cleaned
+            .replace("\u0000", "")
+            .replace("\uFEFF", "")
+            .replace("\uFFFE", "")
+            .filter { c -> c == '\n' || c == '\r' || c == '\t' || c >= ' ' }
+            .trim()
+
+        // 6. Reparar Mojibake si está presente (ej. "canciÃ³n" -> "canción")
+        if (cleaned.contains("Ã")) {
+            cleaned = fixMojibakeIfPresent(cleaned)
+        }
+
+        // 7. Filtrar líneas de cabeceras o publicidad residual
+        if (cleaned.lines().any { line ->
+            val t = line.trim()
+            t.startsWith("Frame:") || t.startsWith("Description=") || t.startsWith("iTunNORM") ||
+            t.startsWith("iTunSMPB") || t.matches(Regex("""(?i)^\[\d{2}:\d{2}(?:[.:]\d{1,3})?\]\s*(?:synced\s*by|lyrics\s*(?:provided\s*)?by|created\s*by|editor|qq\s*music|musixmatch|minilyrics|lrc\s*maker|www\.|https?://).*"""))
+        }) {
+            cleaned = cleaned.lines()
+                .filterNot { line ->
+                    val t = line.trim()
+                    t.startsWith("Frame:") || t.startsWith("Description=") || t.startsWith("iTunNORM") ||
+                    t.startsWith("iTunSMPB") || t.matches(Regex("""(?i)^\[\d{2}:\d{2}(?:[.:]\d{1,3})?\]\s*(?:synced\s*by|lyrics\s*(?:provided\s*)?by|created\s*by|editor|qq\s*music|musixmatch|minilyrics|lrc\s*maker|www\.|https?://).*"""))
+                }
+                .joinToString("\n")
+                .trim()
+        }
+
+        // 8. Si después de la limpieza el resultado es residual o corrupto, retornar vacío
+        if (isCorruptedLyrics(cleaned)) {
+            return ""
+        }
+
+        return cleaned
+    }
+
+    private fun fixMojibakeIfPresent(text: String): String {
+        if (!text.contains("Ã")) return text
+        return try {
+            val bytes = text.toByteArray(Charsets.ISO_8859_1)
+            val candidate = String(bytes, Charsets.UTF_8)
+            if (!candidate.contains("\uFFFD") && candidate.length < text.length) {
+                candidate
+            } else {
+                text
+            }
+        } catch (_: Exception) {
+            text
+        }
     }
 }

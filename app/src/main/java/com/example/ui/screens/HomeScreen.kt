@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -217,23 +220,28 @@ fun HomeScreen(
         // Top Grid (Liked Songs, All Songs & Playlists)
         item {
             data class GridItem(val label: String, val imageUri: String?, val isSpecial: Int, val onClick: () -> Unit)
-            val gridItems = remember(playlists, favoritesCoverUri, allSongsCoverUri, prefsUpdateTrigger) {
+            var isPlaylistsExpanded by remember { mutableStateOf(false) }
+
+            val allGridItems = remember(playlists, favoritesCoverUri, allSongsCoverUri, prefsUpdateTrigger, lang) {
                 val list = mutableListOf<GridItem>()
-                list.add(GridItem(Translations.get(lang, "favorite_songs"), favoritesCoverUri, 1, { onNavigateToPlaylist("Mis Favoritas") }))
+                list.add(GridItem(Translations.get(lang, "favorite_songs"), favoritesCoverUri, 1, { onNavigateToPlaylist("Favorites") }))
                 list.add(GridItem(Translations.get(lang, "all_tracks"), allSongsCoverUri, 2, { onNavigateToPlaylist("All Songs") }))
                 
-                // Add playlists up to 4 more to make max 6
-                playlists.take(4).forEach { p ->
+                // Add all user playlists, ensuring name is shown and never blank
+                playlists.forEach { p ->
                     val pCover = p.imageUri
                         ?: playlistPrefs.getString("cover_${p.playlistId}", null)
                         ?: playlistPrefs.getString("cover_${p.name}", null)
-                    list.add(GridItem(p.name, pCover, 0, { onNavigateToPlaylist(p.name) }))
+                    val pName = if (p.name.isNotBlank()) p.name else "Playlist"
+                    list.add(GridItem(pName, pCover, 0, { onNavigateToPlaylist(p.name) }))
                 }
                 list
             }
 
+            val displayedGridItems = if (isPlaylistsExpanded) allGridItems else allGridItems.take(6)
+
             Column {
-                val chunked = gridItems.chunked(2)
+                val chunked = displayedGridItems.chunked(2)
                 chunked.forEach { rowItems ->
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -257,7 +265,7 @@ fun HomeScreen(
                                                 when(item.isSpecial) {
                                                     1 -> Color(0xFF5A3598)
                                                     2 -> Color(0xFF1E88E5)
-                                                    else -> Color(0xFF888888)
+                                                    else -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                                                 }
                                             ),
                                         contentAlignment = Alignment.Center
@@ -273,17 +281,17 @@ fun HomeScreen(
                                                 modifier = Modifier.fillMaxSize()
                                             )
                                         } else if (item.isSpecial == 1) {
-                                            Icon(Icons.Default.Favorite, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
+                                            Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.White)
                                         } else if (item.isSpecial == 2) {
-                                            Icon(Icons.Default.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
+                                            Icon(Icons.Default.MusicNote, contentDescription = null, tint = Color.White)
                                         } else {
-                                            Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.onBackground)
+                                            Icon(Icons.Default.PlaylistPlay, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp))
                                         }
                                     }
                                     Spacer(modifier = Modifier.width(12.dp))
                                     Text(
                                         text = item.label,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = if (settings.isDarkMode) Color.White else Color(0xFF1C1C1E),
                                         fontWeight = FontWeight.SemiBold,
                                         fontSize = 14.sp,
                                         maxLines = 2,
@@ -298,73 +306,48 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
-        }
 
-        // Playlists Section (Tus Listas de reproducción)
-        if (playlists.isNotEmpty()) {
-            item {
-                Text(
-                    text = Translations.get(lang, "playlists"),
-                    color = MaterialTheme.colorScheme.onBackground,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
+                // If more than 6 items exist, show toggle tab for "Ver más" / "Ver menos"
+                if (allGridItems.size > 6) {
+                    val isDark = settings.isDarkMode
+                    val seeMoreContainerColor = if (isDark) Color(0xFF262628) else Color(0xFFEBEBF0)
+                    val seeMoreContentColor = if (isDark) Color(0xFFF2F2F2) else Color(0xFF2C2C2E)
+                    val seeMoreBorder = BorderStroke(1.dp, if (isDark) Color(0x26FFFFFF) else Color(0x14000000))
 
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    items(playlists) { p ->
-                        val pCover = p.imageUri
-                            ?: playlistPrefs.getString("cover_${p.playlistId}", null)
-                            ?: playlistPrefs.getString("cover_${p.name}", null)
-                        Column(
-                            modifier = Modifier
-                                .width(145.dp)
-                                .clickable { onNavigateToPlaylist(p.name) },
-                            horizontalAlignment = Alignment.Start
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Surface(
+                            onClick = { isPlaylistsExpanded = !isPlaylistsExpanded },
+                            shape = RoundedCornerShape(20.dp),
+                            color = seeMoreContainerColor,
+                            border = seeMoreBorder,
+                            modifier = Modifier.padding(vertical = 4.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(145.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0xFF282828)),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                             ) {
-                                if (!pCover.isNullOrBlank()) {
-                                    AsyncImage(
-                                        model = ImageRequest.Builder(LocalContext.current)
-                                            .data(pCover)
-                                            .crossfade(true)
-                                            .build(),
-                                        contentDescription = p.name,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    Icon(
-                                        imageVector = Icons.Default.PlaylistPlay,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(56.dp)
-                                    )
-                                }
+                                Text(
+                                    text = if (isPlaylistsExpanded) {
+                                        Translations.get(lang, "see_less")
+                                    } else {
+                                        Translations.get(lang, "see_more")
+                                    },
+                                    color = seeMoreContentColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(
+                                    imageVector = if (isPlaylistsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = seeMoreContentColor,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = p.name,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = if (!p.description.isNullOrBlank()) p.description!! else "Playlist",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
                         }
                     }
                 }

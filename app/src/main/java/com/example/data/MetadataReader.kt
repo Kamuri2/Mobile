@@ -11,6 +11,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.logging.Level
 import java.util.logging.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 object MetadataReader {
 
@@ -19,8 +21,9 @@ object MetadataReader {
     /**
      * Reads complete metadata from an audio Uri using MediaMetadataRetriever
      * and deep JAudioTagger extraction for embedded LRC lyrics and tags across all formats (MP3, FLAC, WAV, M4A, OGG, OPUS).
+     * Guaranteed to execute on Dispatchers.IO to never block the main thread.
      */
-            fun extractFullMetadata(context: Context, track: Track): Track {
+    suspend fun extractFullMetadata(context: Context, track: Track): Track = withContext(Dispatchers.IO) {
         var title = track.title
         var artist = track.artist
         var album = track.album
@@ -99,18 +102,21 @@ object MetadataReader {
             }
         }
 
-        val lyricsResult = AudioLyricsExtractor.extractLyrics(context, track.contentUri, track.path.takeIf { it.isNotBlank() && !it.startsWith("content://") })
-        var extractedLyrics = lyricsResult.lyrics ?: ""
-        if (extractedLyrics.isBlank() && track.path.isNotBlank()) {
-            extractedLyrics = searchSidecarLyrics(track.path)
+        val finalLyrics = when {
+            track.lyrics.isNotBlank() && !AudioLyricsExtractor.isCorruptedLyrics(track.lyrics) -> {
+                AudioLyricsExtractor.cleanExtractedLyrics(track.lyrics)
+            }
+            else -> {
+                val lyricsResult = AudioLyricsExtractor.extractLyrics(context, track.contentUri, track.path.takeIf { it.isNotBlank() && !it.startsWith("content://") })
+                var extracted = lyricsResult.lyrics ?: ""
+                if ((extracted.isBlank() || AudioLyricsExtractor.isCorruptedLyrics(extracted)) && track.path.isNotBlank()) {
+                    extracted = searchSidecarLyrics(track.path)
+                }
+                if (extracted.isNotBlank()) AudioLyricsExtractor.cleanExtractedLyrics(extracted) else ""
+            }
         }
-        if (extractedLyrics.isNotBlank()) {
-            extractedLyrics = cleanExtractedLyrics(extractedLyrics)
-        }
-
-        val finalLyrics = if (extractedLyrics.isNotBlank()) extractedLyrics else track.lyrics
         
-        return track.copy(
+        track.copy(
             title = title,
             artist = artist,
             album = album,
@@ -122,6 +128,50 @@ object MetadataReader {
             sampleRate = sampleRate,
             lyrics = finalLyrics
         )
+    }
+
+    /**
+     * Extracción ultraligera de bitrate y sampleRate para la etapa 1 (canción y portada),
+     * sin abrir árboles de etiquetas pesadas ni extraer letras ni copiar archivos.
+     */
+    suspend fun extractAudioSpecsLightweight(context: Context, track: Track): Pair<String, String> = withContext(Dispatchers.IO) {
+        var bitrate = track.bitrate
+        var sampleRate = track.sampleRate
+
+        // 1. MediaMetadataRetriever (rápido, nativo)
+        try {
+            val mmr = MediaMetadataRetriever()
+            if (track.contentUri != Uri.EMPTY) {
+                mmr.setDataSource(context, track.contentUri)
+            } else if (track.path.isNotBlank()) {
+                mmr.setDataSource(track.path)
+            }
+            mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()?.let {
+                if (bitrate.isBlank()) bitrate = "${it / 1000} kbps"
+            }
+            mmr.release()
+        } catch (_: Exception) {}
+
+        // 2. Si sampleRate falta y hay archivo directo, leer solo cabecera técnica
+        if (sampleRate.isBlank() && track.path.isNotBlank()) {
+            try {
+                val file = File(track.path)
+                if (file.exists() && file.canRead()) {
+                    val af = org.jaudiotagger.audio.AudioFileIO.read(file)
+                    val header = af.audioHeader
+                    if (header != null) {
+                        val sr = header.sampleRateAsNumber
+                        if (sr > 0) sampleRate = "${sr / 1000.0} kHz".replace(".0 kHz", " kHz")
+                        if (bitrate.isBlank()) {
+                            val br = header.bitRateAsNumber
+                            if (br > 0) bitrate = "${br} kbps"
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        Pair(bitrate, sampleRate)
     }
 
     private fun isGenericName(str: String): Boolean {
@@ -213,35 +263,10 @@ object MetadataReader {
     }
 
     /**
-     * Limpia la metadata de letras incrustadas.
-     * JAudioTagger a veces devuelve el frame con cabeceras de idioma u otros datos (ej. "eng||[00:12.00]Letra").
+     * Limpia la metadata de letras incrustadas delegando al motor centralizado.
      */
     fun cleanExtractedLyrics(raw: String): String {
-        var cleaned = raw.trim()
-        
-        // Si el tag incrustado viene con separador de JAudioTagger (ej. "eng||[00:12.00]Letra")
-        if (cleaned.contains("||")) {
-            val parts = cleaned.split("||", limit = 2)
-            if (parts.size == 2 && parts[0].length <= 8) {
-                cleaned = parts[1]
-            }
-        }
-        
-        // Limpiar prefijos comunes de idioma que algunos editores incrustan
-        val commonPrefixes = listOf("eng|", "spa|", "jpn|", "XXX|", "xxx|", "ger|", "fra|", "ita|", "zho|")
-        for (prefix in commonPrefixes) {
-            if (cleaned.startsWith(prefix, ignoreCase = true)) {
-                cleaned = cleaned.substring(prefix.length)
-            }
-        }
-
-        // Eliminar caracteres nulos iniciales o finales si existían en los bytes binarios
-        cleaned = cleaned.trim { it <= ' ' || it == '\u0000' }
-        
-        // Corregir posible mojibake (doble codificación UTF-8 interpretada como Latin1)
-        cleaned = fixMojibakeIfPresent(cleaned)
-        
-        return cleaned
+        return AudioLyricsExtractor.cleanExtractedLyrics(raw)
     }
 
     private fun fixMojibakeIfPresent(text: String): String {

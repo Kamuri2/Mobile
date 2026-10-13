@@ -25,7 +25,14 @@ class CrossfadeEngine(
     var fadeOutDurationMs: Long = 100L,
     var fadeInDurationMs: Long = 100L
 ) {
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    private fun ensureActiveScope(): CoroutineScope {
+        if (!scope.isActive) {
+            scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+        }
+        return scope
+    }
 
     var isCrossfading = false
         private set
@@ -37,6 +44,8 @@ class CrossfadeEngine(
     private var preloadJob: Job? = null
     private var userVolume = 1f
     private var activePlayer: ExoPlayer? = null
+    private var currentOutgoingPlayer: ExoPlayer? = null
+    private var currentIncomingPlayer: ExoPlayer? = null
 
     fun attachActivePlayer(player: ExoPlayer, volume: Float) {
         activePlayer = player
@@ -54,41 +63,62 @@ class CrossfadeEngine(
     }
 
     /**
-     * Executes the ultra-fast 100ms crossfade between outgoing and incoming player.
-     * 10 steps of 10ms = 100ms using exponential cubic/sqrt curve.
+     * Executes the gradual, calculated crossfade between outgoing and incoming player.
+     * Uses equal-power sinusoidal curves (cos/sin) and 25ms steps to eliminate audio dips,
+     * hanging, and clicks according to the user-configured duration in settings.
      */
     suspend fun performCrossfade(
         playerOut: ExoPlayer?,
         playerIn: ExoPlayer,
         durationMs: Long = crossfadeDurationMs
     ) {
-        val steps = 10
-        val stepDelay = (durationMs / steps).coerceAtLeast(5L)
+        playerOut?.repeatMode = ExoPlayer.REPEAT_MODE_OFF
+        playerIn.repeatMode = ExoPlayer.REPEAT_MODE_OFF
+        currentOutgoingPlayer = playerOut
+        currentIncomingPlayer = playerIn
 
-        for (i in 0..steps) {
-            val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
-
-            // Curva Exponencial para evitar clics y cortes:
-            // Outgoing: (1 - p)^3 mantiene volumen alto y cae en los últimos 20ms
-            // Incoming: p^0.5 sube rápido para evitar baches de energía sonora
-            val outVol = ((1f - progress).toDouble().pow(3.0).toFloat() * userVolume).coerceIn(0f, 1f)
-            val inVol = (progress.toDouble().pow(0.5).toFloat() * userVolume).coerceIn(0f, 1f)
-
-            playerOut?.volume = outVol
-            playerIn.volume = inVol
-
-            delay(stepDelay)
+        if (durationMs <= 40L) {
+            performInstantSwitch(playerOut, playerIn)
+            return
         }
 
-        // Limpieza del reproductor saliente
-        playerOut?.volume = 0f
-        playerOut?.stop()
-        playerOut?.clearMediaItems()
+        val stepDelayMs = 20L
+        val steps = (durationMs / stepDelayMs).toInt().coerceIn(5, 50)
+        val actualStepDelay = (durationMs / steps).coerceAtLeast(5L)
 
-        // Reproductor entrante a volumen completo del usuario
-        playerIn.volume = userVolume
-        activePlayer = playerIn
-        isCrossfading = false
+        try {
+            for (i in 0..steps) {
+                val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
+
+                // Equal-Power Sinusoidal Curve: cos(angle) and sin(angle)
+                // Maintains constant perceived loudness throughout the entire mix transition
+                val angle = progress * (Math.PI / 2.0)
+                val outVol = (kotlin.math.cos(angle).toFloat() * userVolume).coerceIn(0f, 1f)
+                val inVol = (kotlin.math.sin(angle).toFloat() * userVolume).coerceIn(0f, 1f)
+
+                if (playerOut != null && playerOut.playbackState != ExoPlayer.STATE_ENDED) {
+                    playerOut.volume = outVol
+                } else {
+                    playerOut?.volume = 0f
+                }
+                playerIn.volume = inVol
+
+                delay(actualStepDelay)
+            }
+        } finally {
+            // ALWAYS cleanup outgoing player completely
+            try {
+                playerOut?.volume = 0f
+                playerOut?.stop()
+                playerOut?.clearMediaItems()
+            } catch (_: Exception) {}
+
+            playerIn.volume = userVolume
+            activePlayer = playerIn
+            isCrossfading = false
+            currentOutgoingPlayer = null
+            currentIncomingPlayer = null
+        }
     }
 
     /**
@@ -103,30 +133,36 @@ class CrossfadeEngine(
         onComplete: () -> Unit
     ) {
         cancelCrossfade()
+        currentOutgoingPlayer = outgoingPlayer
+        currentIncomingPlayer = incomingPlayer
         userVolume = volume
+        activePlayer = incomingPlayer
         isCrossfading = true
 
-        crossfadeJob = scope.launch {
-            // 1. Esperar a que el buffer esté listo y en estado STATE_READY (sin clics)
-            val startWait = SystemClock.elapsedRealtime()
-            while (incomingPlayer.playbackState == ExoPlayer.STATE_BUFFERING) {
-                if (SystemClock.elapsedRealtime() - startWait > 400) break
-                delay(5)
-            }
+        // 1. Activate incoming player and switch UI state immediately
+        onBufferReady()
 
-            // 2. Notificar que el buffer está listo para que la UI se actualice
-            onBufferReady()
+        // 2. Start incoming player immediately
+        incomingPlayer.seekTo(0)
+        incomingPlayer.volume = 0f
+        incomingPlayer.playWhenReady = true
+        incomingPlayer.play()
 
-            // 3. Sincronización exacta e inicio simultáneo
-            incomingPlayer.seekTo(0)
-            incomingPlayer.volume = 0f
-            incomingPlayer.playWhenReady = true
-            incomingPlayer.play()
-
-            // 4. Ejecutar el cruce de volumen en 100ms
-            performCrossfade(outgoingPlayer, incomingPlayer, durationMs)
-
+        if (durationMs <= 40L) {
+            performInstantSwitch(outgoingPlayer, incomingPlayer)
             onComplete()
+            return
+        }
+
+        crossfadeJob = ensureActiveScope().launch {
+            try {
+                // 3. Execute calculated 100ms equal-power crossfade
+                performCrossfade(outgoingPlayer, incomingPlayer, durationMs)
+            } finally {
+                incomingPlayer.volume = userVolume
+                isCrossfading = false
+                onComplete()
+            }
         }
     }
 
@@ -143,49 +179,73 @@ class CrossfadeEngine(
     ) {
         if (isCrossfading || isPreloading) return
         isPreloading = true
+        currentOutgoingPlayer = outgoingPlayer
+        currentIncomingPlayer = incomingPlayer
         userVolume = volume
 
-        preloadJob = scope.launch {
-            // 1. Esperar a que incomingPlayer alcance STATE_READY (silenciosamente)
-            val startWait = SystemClock.elapsedRealtime()
-            while (incomingPlayer.playbackState == ExoPlayer.STATE_BUFFERING) {
-                if (SystemClock.elapsedRealtime() - startWait > 500) break
-                delay(5)
-            }
+        preloadJob = ensureActiveScope().launch {
+            try {
+                // 1. Wait silently for incomingPlayer to reach STATE_READY (up to 3000ms max)
+                val startWait = SystemClock.elapsedRealtime()
+                while (incomingPlayer.playbackState == ExoPlayer.STATE_BUFFERING) {
+                    if (SystemClock.elapsedRealtime() - startWait > 3000) break
+                    delay(20)
+                }
 
-            // 2. Obtener cuánto falta para el final de la canción actual
-            val timeRemaining = outgoingPlayer.duration - outgoingPlayer.currentPosition
+                // 2. Wait actively for the exact moment: (timeRemaining <= durationMs)
+                val waitStartActive = SystemClock.elapsedRealtime()
+                while (true) {
+                    if (!outgoingPlayer.playWhenReady && !outgoingPlayer.isPlaying) {
+                        delay(50)
+                        if (SystemClock.elapsedRealtime() - waitStartActive > 5000) break
+                        continue
+                    }
+                    if (outgoingPlayer.playbackState == ExoPlayer.STATE_ENDED) {
+                        break
+                    }
+                    val dur = outgoingPlayer.duration
+                    val pos = outgoingPlayer.currentPosition
+                    if (dur > 0L) {
+                        val rem = dur - pos
+                        if (rem <= durationMs) {
+                            break
+                        }
+                    } else {
+                        break
+                    }
+                    delay(20)
+                }
 
-            if (timeRemaining < 30) {
-                // Fallback instantáneo si ya terminó
-                performInstantSwitch(outgoingPlayer, incomingPlayer)
-                onSyncMoment()
-                onComplete()
+                // 3. Exact handover moment
                 isPreloading = false
-                return@launch
+                isCrossfading = true
+
+                onSyncMoment()
+
+                incomingPlayer.seekTo(0)
+                incomingPlayer.volume = 0f
+                incomingPlayer.playWhenReady = true
+                incomingPlayer.play()
+
+                // 4. Calculate actual duration based on remaining track duration
+                val actualRemaining = if (outgoingPlayer.duration > 0L && outgoingPlayer.playbackState != ExoPlayer.STATE_ENDED) {
+                    (outgoingPlayer.duration - outgoingPlayer.currentPosition).coerceAtLeast(100L)
+                } else durationMs
+                val effectiveDuration = maxOf(durationMs, minOf(durationMs, actualRemaining))
+
+                performCrossfade(outgoingPlayer, incomingPlayer, effectiveDuration)
+
+                onComplete()
+            } catch (e: Exception) {
+                // Ensure state is never locked
+                isPreloading = false
+                isCrossfading = false
+                outgoingPlayer.volume = userVolume
+                incomingPlayer.volume = userVolume
+            } finally {
+                isPreloading = false
+                isCrossfading = false
             }
-
-            // 3. Esperar el momento justo para el inicio del crossfade: (timeRemaining - durationMs)
-            val delayBeforeSync = maxOf(0L, timeRemaining - durationMs)
-            if (delayBeforeSync > 0L) {
-                delay(delayBeforeSync)
-            }
-
-            // 4. Momento de la verdad: Sincronización Exacta
-            isPreloading = false
-            isCrossfading = true
-
-            onSyncMoment()
-
-            incomingPlayer.seekTo(0)
-            incomingPlayer.volume = 0f
-            incomingPlayer.playWhenReady = true
-            incomingPlayer.play()
-
-            // 5. Ejecutar cruce de 100ms
-            performCrossfade(outgoingPlayer, incomingPlayer, durationMs)
-
-            onComplete()
         }
     }
 
@@ -199,6 +259,8 @@ class CrossfadeEngine(
         activePlayer = playerIn
         isCrossfading = false
         isPreloading = false
+        currentOutgoingPlayer = null
+        currentIncomingPlayer = null
     }
 
     fun startFadeIn(player: ExoPlayer? = activePlayer, customDurationMs: Long = fadeInDurationMs) {
@@ -207,16 +269,19 @@ class CrossfadeEngine(
         val duration = customDurationMs.coerceAtLeast(50L)
         val steps = 10
         val stepDelay = (duration / steps).coerceAtLeast(5L)
-        p.volume = 0f
+        p.volume = 0.05f * userVolume
 
-        crossfadeJob = scope.launch {
-            for (i in 0..steps) {
-                val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
-                val inVol = (progress.toDouble().pow(0.5).toFloat() * userVolume).coerceIn(0f, 1f)
-                p.volume = inVol
-                delay(stepDelay)
+        crossfadeJob = ensureActiveScope().launch {
+            try {
+                for (i in 0..steps) {
+                    val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
+                    val inVol = (progress.toDouble().pow(0.5).toFloat() * userVolume).coerceIn(0f, 1f)
+                    p.volume = inVol
+                    delay(stepDelay)
+                }
+            } finally {
+                p.volume = userVolume
             }
-            p.volume = userVolume
         }
     }
 
@@ -235,12 +300,30 @@ class CrossfadeEngine(
         preloadJob = null
         isCrossfading = false
         isPreloading = false
+
+        // Stop and clear any outgoing player so audio never keeps playing in the background
+        currentOutgoingPlayer?.let {
+            if (it != activePlayer) {
+                it.volume = 0f
+                it.stop()
+                it.clearMediaItems()
+            }
+        }
+        currentIncomingPlayer?.let {
+            if (it != activePlayer) {
+                it.volume = 0f
+                it.stop()
+                it.clearMediaItems()
+            }
+        }
+        currentOutgoingPlayer = null
+        currentIncomingPlayer = null
+
         activePlayer?.volume = userVolume
     }
 
     fun release() {
         cancelCrossfade()
-        scope.cancel()
         activePlayer = null
     }
 }

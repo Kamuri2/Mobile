@@ -122,11 +122,11 @@ fun LibraryScreen(
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            placeholder = { Text("Buscar canción, artista o carpeta...", color = GlassTextMuted) },
+            placeholder = { Text(com.example.ui.Translations.get(settings.appLanguage, "search_song_artist_folder"), color = GlassTextMuted) },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Default.Search,
-                    contentDescription = "Search",
+                    contentDescription = com.example.ui.Translations.get(settings.appLanguage, "search"),
                     tint = MaterialTheme.colorScheme.primary
                 )
             },
@@ -167,7 +167,7 @@ fun LibraryScreen(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Elegir Carpeta", fontSize = 12.sp, color = Color.White)
+                Text(com.example.ui.Translations.get(settings.appLanguage, "choose_folder"), fontSize = 12.sp, color = Color.White)
             }
 
             Button(
@@ -186,7 +186,7 @@ fun LibraryScreen(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Escanear Audio", fontSize = 12.sp, color = Color.White)
+                Text(com.example.ui.Translations.get(settings.appLanguage, "scan_audio"), fontSize = 12.sp, color = Color.White)
             }
         }
 
@@ -198,12 +198,17 @@ fun LibraryScreen(
             modifier = Modifier.fillMaxWidth()
         ) {
             items(LibraryTab.values()) { tab ->
+                val allTracksWord = com.example.ui.Translations.get(settings.appLanguage, "all_tracks")
+                val foldersWord = com.example.ui.Translations.get(settings.appLanguage, "folders")
+                val albumsWord = com.example.ui.Translations.get(settings.appLanguage, "albums")
+                val artistsWord = com.example.ui.Translations.get(settings.appLanguage, "artists")
+                val favoritesWord = com.example.ui.Translations.get(settings.appLanguage, "favorites")
                 val label = when (tab) {
-                    LibraryTab.ALL_TRACKS -> "Todas (${tracks.size})"
-                    LibraryTab.FOLDERS -> "Carpetas (${folderGroups.size})"
-                    LibraryTab.ALBUMS -> "Álbumes"
-                    LibraryTab.ARTISTS -> "Artistas"
-                    LibraryTab.FAVORITES -> "Favoritas ❤️"
+                    LibraryTab.ALL_TRACKS -> "$allTracksWord (${tracks.size})"
+                    LibraryTab.FOLDERS -> "$foldersWord (${folderGroups.size})"
+                    LibraryTab.ALBUMS -> albumsWord
+                    LibraryTab.ARTISTS -> artistsWord
+                    LibraryTab.FAVORITES -> "$favoritesWord ❤️"
                 }
 
                 FilterChip(
@@ -239,14 +244,14 @@ fun LibraryScreen(
                     )
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
-                        text = "No se encontraron canciones",
+                        text = com.example.ui.Translations.get(settings.appLanguage, "no_songs_found"),
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = GlassTextPrimary
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Usa 'Elegir Carpeta' para seleccionar un directorio de música o reproduce los audios de muestra.",
+                        text = com.example.ui.Translations.get(settings.appLanguage, "choose_folder_hint"),
                         fontSize = 13.sp,
                         color = GlassTextMuted,
                         modifier = Modifier.padding(horizontal = 16.dp)
@@ -256,7 +261,7 @@ fun LibraryScreen(
                         onClick = onLoadBuiltInSamples,
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                     ) {
-                        Text("Cargar Música de Muestra", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Text(com.example.ui.Translations.get(settings.appLanguage, "load_sample_music"), color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                 }
             }

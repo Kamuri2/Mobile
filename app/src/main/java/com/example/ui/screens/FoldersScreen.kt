@@ -100,7 +100,7 @@ fun FoldersScreen(
                     text = com.example.ui.Translations.get(settings.appLanguage, "folders"),
                     fontSize = 32.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = if (settings.isDarkMode) Color.White else Color.Black
                 )
             }
 
@@ -109,7 +109,7 @@ fun FoldersScreen(
             // Folder Grid/List
             if (folderGroups.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No music folders found", color = GlassTextMuted)
+                    Text(com.example.ui.Translations.get(settings.appLanguage, "no_folders"), color = if (settings.isDarkMode) GlassTextMuted else Color(0xFF757575))
                 }
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -123,7 +123,7 @@ fun FoldersScreen(
                                 .fillMaxWidth()
                                 .clickable { selectedFolder = folderName },
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF))
+                            colors = CardDefaults.cardColors(containerColor = if (settings.isDarkMode) Color(0x1AFFFFFF) else Color(0x0C000000))
                         ) {
                             Row(
                                 modifier = Modifier
@@ -135,7 +135,7 @@ fun FoldersScreen(
                                     modifier = Modifier
                                         .size(56.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(Color(0xFF222222)),
+                                        .background(if (settings.isDarkMode) Color(0xFF222222) else Color(0xFFE5E5EA)),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (representativeTrack != null) {
@@ -173,27 +173,31 @@ fun FoldersScreen(
                                         text = folderName,
                                         fontSize = 17.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White,
+                                        color = if (settings.isDarkMode) Color.White else Color.Black,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Spacer(modifier = Modifier.height(3.dp))
                                     val subText = if (representativeTrack != null && representativeTrack.artist.isNotBlank() && representativeTrack.artist != "Unknown Artist") {
-                                        "${folderTracks.size} audio • ${representativeTrack.artist}"
+                                        "${folderTracks.size} • ${representativeTrack.artist}"
                                     } else {
-                                        "${folderTracks.size} audio files"
+                                        "${folderTracks.size} " + com.example.ui.Translations.get(settings.appLanguage, "audio_files")
                                     }
                                     Text(
                                         text = subText,
                                         fontSize = 13.sp,
-                                        color = GlassTextSecondary,
+                                        color = if (settings.isDarkMode) GlassTextSecondary else Color(0xFF666666),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
 
                                 IconButton(onClick = { onPlayFolder(folderTracks, 0) }) {
-                                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = "Play Folder", tint = Color.White)
+                                    Icon(
+                                        imageVector = Icons.Default.PlayArrow,
+                                        contentDescription = com.example.ui.Translations.get(settings.appLanguage, "play_folder"),
+                                        tint = if (settings.isDarkMode) Color.White else Color.Black
+                                    )
                                 }
                             }
                         }
@@ -221,9 +225,9 @@ fun FolderDetailScreen(
     val primaryColor = settings.selectedTheme.primaryColor
     val isDarkMode = settings.isDarkMode
     val surfaceBg = if (isDarkMode) Color(0xFF121212) else Color(0xFFF7F7F9)
-    val textPrimary = if (isDarkMode) Color.White else Color(0xFF111111)
+    val textPrimary = if (isDarkMode) Color.White else Color.Black
     val textSecondary = if (isDarkMode) Color(0xB3FFFFFF) else Color(0xFF555555)
-    val iconTint = if (isDarkMode) Color.White else Color(0xFF1E1E1E)
+    val iconTint = if (isDarkMode) Color.White else Color.Black
     val isLightPrimary = (0.299f * primaryColor.red + 0.587f * primaryColor.green + 0.114f * primaryColor.blue) > 0.5f
     val playIconTint = if (isLightPrimary) Color.Black else Color.White
     val firstTrack = remember(tracks) { tracks.firstOrNull() }
@@ -324,7 +328,7 @@ fun FolderDetailScreen(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Artist / Folder chip
-                val representativeArtist = firstTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: "Varios Artistas"
+                val representativeArtist = firstTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: com.example.ui.Translations.get(settings.appLanguage, "various_artists")
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -358,8 +362,10 @@ fun FolderDetailScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Subtitle: "Carpeta • X canciones"
-                val metadataText = "Carpeta • ${tracks.size} " + if (tracks.size == 1) "canción" else "canciones"
+                // Subtitle: "Folder • X songs"
+                val folderWord = com.example.ui.Translations.get(settings.appLanguage, "folder")
+                val songsWord = if (tracks.size == 1) com.example.ui.Translations.get(settings.appLanguage, "song_singular") else com.example.ui.Translations.get(settings.appLanguage, "songs")
+                val metadataText = "$folderWord • ${tracks.size} $songsWord"
                 Text(
                     text = metadataText,
                     fontSize = 13.sp,
@@ -386,7 +392,7 @@ fun FolderDetailScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Play Folder",
+                            contentDescription = com.example.ui.Translations.get(settings.appLanguage, "play_folder"),
                             tint = playIconTint,
                             modifier = Modifier.size(32.dp)
                         )
@@ -401,7 +407,7 @@ fun FolderDetailScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
+                            contentDescription = com.example.ui.Translations.get(settings.appLanguage, "shuffle_all"),
                             tint = primaryColor,
                             modifier = Modifier.size(28.dp)
                         )

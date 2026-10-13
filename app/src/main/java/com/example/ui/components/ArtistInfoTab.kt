@@ -1,13 +1,19 @@
 package com.example.ui.components
 import androidx.compose.ui.draw.blur
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import com.example.data.ArtistProfile
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.*
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import java.io.File
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -24,15 +30,20 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.util.lerp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,17 +62,937 @@ import androidx.compose.ui.graphics.Brush
 
 /**
  * Spotify-style inline Artist Info Card rendered directly below the player controls.
- * Replaces the old expandable bottom tab.
+ * Supports both single artists and Multi-Artist "Tarjetero" card decks with skeleton loading.
  */
 @Composable
 fun ArtistInfoCard(
     track: Track?,
     artistInfo: ArtistInfo?,
     language: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    scrollState: androidx.compose.foundation.ScrollState? = null,
+    onNavigateToArtist: ((String) -> Unit)? = null,
+    externalProfiles: List<ArtistProfile>? = null,
+    isLoading: Boolean = false
+) {
+    val cacheRevision by com.example.data.ArtistInfoFetcher.cacheRevision.collectAsState()
+    var profiles by remember(track?.id, track?.artist, externalProfiles, cacheRevision) {
+        mutableStateOf(
+            if (!externalProfiles.isNullOrEmpty()) externalProfiles
+            else com.example.data.ArtistInfoFetcher.getCachedArtistsForTrack(track)
+        )
+    }
+
+    LaunchedEffect(track?.id, track?.artist, externalProfiles, cacheRevision) {
+        if (!externalProfiles.isNullOrEmpty()) {
+            profiles = externalProfiles
+            return@LaunchedEffect
+        }
+        if (track != null) {
+            val allComplete = profiles.isNotEmpty() && profiles.all {
+                !it.info.imageUrl.isNullOrBlank() && !it.info.bio.isNullOrBlank()
+            }
+            if (allComplete) {
+                return@LaunchedEffect
+            }
+            // Breve respiro para no saturar memoria mientras se extraen portada o letras
+            delay(500)
+            val fetched = com.example.data.ArtistInfoFetcher.fetchArtistsForTrack(track)
+            if (fetched.isNotEmpty()) {
+                profiles = fetched
+            }
+        }
+    }
+
+    val effectiveProfiles = if (profiles.isNotEmpty()) {
+        profiles
+    } else if (artistInfo != null) {
+        val name = track?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: Translations.get(language, "unknown_artist")
+        listOf(com.example.data.ArtistProfile(name = name, isPrimary = true, info = artistInfo))
+    } else {
+        emptyList()
+    }
+
+    // Indicador visual de si estamos en estado de carga o esperando datos
+    val isActivelyLoading = isLoading || (effectiveProfiles.isEmpty() && track != null)
+
+    if (isActivelyLoading && effectiveProfiles.isEmpty()) {
+        // Mostrar skeleton loader de referencia visual mientras se busca la info del artista
+        ArtistCardSkeleton(modifier = modifier, language = language)
+        return
+    }
+
+    val trackAlbumArt = track?.albumArtUri
+
+    if (effectiveProfiles.size > 1) {
+        // Multi-artist "Tarjetero" Card Deck
+        ArtistTarjeteroDeck(
+            profiles = effectiveProfiles,
+            language = language,
+            modifier = modifier,
+            trackArtFallback = trackAlbumArt,
+            parentScrollState = scrollState,
+            onNavigateToArtist = onNavigateToArtist
+        )
+    } else if (effectiveProfiles.isNotEmpty()) {
+        // Single artist card
+        ArtistSingleCardView(
+            profile = effectiveProfiles[0],
+            language = language,
+            modifier = modifier,
+            trackArtFallback = trackAlbumArt,
+            onNavigateToArtist = onNavigateToArtist
+        )
+    } else {
+        // Fallback placeholder card
+        val fallbackName = track?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: Translations.get(language, "unknown_artist")
+        ArtistSingleCardView(
+            profile = com.example.data.ArtistProfile(
+                name = fallbackName,
+                isPrimary = true,
+                info = ArtistInfo(imageUrl = null, bio = null, followers = "", listeners = "", origin = "")
+            ),
+            language = language,
+            modifier = modifier,
+            trackArtFallback = trackAlbumArt,
+            onNavigateToArtist = onNavigateToArtist
+        )
+    }
+}
+
+/**
+ * Skeleton Loader con animación de brillo suave (shimmer) para las tarjetas de artistas
+ * Proporciona feedback visual inmediato cuando se cargan las tarjetas.
+ */
+@Composable
+fun ArtistCardSkeleton(
+    modifier: Modifier = Modifier,
+    language: String = "en"
+) {
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val baseCardBg = if (isLight) Color(0xFFF3F4F6) else Color(0xFF1E1E24)
+    val shimmerBase = if (isLight) Color(0xFFE5E7EB) else Color(0xFF2A2A35)
+    val shimmerHighlight = if (isLight) Color(0xFFF9FAFB) else Color(0xFF383846)
+    val cardBorder = if (isLight) Color(0x1F000000) else Color.White.copy(alpha = 0.08f)
+
+    val transition = rememberInfiniteTransition(label = "shimmerTransition")
+    val translateAnim by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1000f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1300, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmerAnim"
+    )
+
+    val shimmerBrush = Brush.linearGradient(
+        colors = listOf(shimmerBase, shimmerHighlight, shimmerBase),
+        start = Offset(translateAnim - 400f, translateAnim - 400f),
+        end = Offset(translateAnim, translateAnim)
+    )
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp)),
+        colors = CardDefaults.cardColors(containerColor = baseCardBg),
+        border = BorderStroke(1.dp, cardBorder),
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Skeleton Banner Area
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp)
+                    .background(shimmerBrush)
+            ) {
+                // Header skeleton badge / label
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .height(24.dp)
+                            .width(160.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isLight) Color.White.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.15f))
+                    )
+                    Box(
+                        modifier = Modifier
+                            .height(20.dp)
+                            .width(70.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                    )
+                }
+            }
+
+            // Skeleton Stats Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .height(18.dp)
+                            .width(70.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(shimmerBrush)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .height(12.dp)
+                            .width(55.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(shimmerBrush)
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .height(18.dp)
+                            .width(80.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(shimmerBrush)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .height(12.dp)
+                            .width(45.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(shimmerBrush)
+                    )
+                }
+            }
+
+            // Skeleton Bio Lines
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.95f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(shimmerBrush)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(shimmerBrush)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.6f)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(shimmerBrush)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Interactive Multi-Artist "Tarjetero" Card Deck.
+ * Presenta las tarjetas apiladas dinámicamente con interpolación matemática (`lerp`)
+ * y `graphicsLayer`. Conforme el usuario hace scroll hacia abajo en la pantalla,
+ * las tarjetas participantes se van desapilando una debajo de la otra de forma fluida.
+ */
+@Composable
+fun ArtistTarjeteroDeck(
+    profiles: List<com.example.data.ArtistProfile>,
+    language: String,
+    modifier: Modifier = Modifier,
+    trackArtFallback: Any? = null,
+    parentScrollState: androidx.compose.foundation.ScrollState? = null,
+    onNavigateToArtist: ((String) -> Unit)? = null
+) {
+    if (profiles.isEmpty()) return
+
+    // Si solo hay un artista, se muestra directamente sin apilar
+    if (profiles.size == 1) {
+        ArtistSingleCardView(
+            profile = profiles[0],
+            language = language,
+            showRoleBadge = true,
+            trackArtFallback = trackArtFallback,
+            modifier = modifier.fillMaxWidth(),
+            onNavigateToArtist = onNavigateToArtist
+        )
+        return
+    }
+
+    // Scroll de referencia: utiliza el scrollState del contenedor o uno local
+    val localScrollState = rememberScrollState()
+    val scrollState = parentScrollState ?: localScrollState
+    val scrollY = scrollState.value.toFloat()
+
+    // Configuración de la animación matemática de desapilado
+    val maxScroll = 600f
+    val progreso = (scrollY / maxScroll).coerceIn(0f, 1f)
+    val asomoInicialPx = 72f // Lo que se asoma la cabecera de cada tarjeta cuando están apiladas detrás
+
+    // Altura medida dinámicamente de cada tarjeta para garantizar que nunca se traslapen al final
+    val cardHeights = remember(profiles.size) { mutableStateMapOf<Int, Int>() }
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy((18 * progreso).dp)
+    ) {
+        profiles.forEachIndexed { index, prof ->
+            // Prevenir flasheo al cambiar de canción: si aún no se ha medido la tarjeta anterior (cardHeights[index-1] == null),
+            // usar 0f de translationY para que se ubique ordenadamente de arriba hacia abajo sin dar un salto en medio de la pantalla
+            val prevHeight = cardHeights[index - 1]
+            val currentTranslationY = if (index == 0 || prevHeight == null) {
+                0f
+            } else {
+                val measuredPrevHeight = prevHeight.toFloat()
+                val fullOverlapPx = (measuredPrevHeight - asomoInicialPx).coerceAtLeast(0f)
+                lerp(-fullOverlapPx, 0f, progreso)
+            }
+
+            // Escala progresiva de profundidad (las de atrás son sutilmente más chicas)
+            val escalaInicial = 1f - ((profiles.size - 1 - index) * 0.035f).coerceIn(0f, 0.12f)
+            val currentScale = if (prevHeight != null || index == 0) lerp(escalaInicial, 1f, progreso) else 1f
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onSizeChanged { size ->
+                        cardHeights[index] = size.height
+                    }
+                    .graphicsLayer {
+                        translationY = currentTranslationY
+                        scaleX = currentScale
+                        scaleY = currentScale
+                        shadowElevation = if (progreso < 0.95f) 8f else 0f
+                    }
+            ) {
+                ArtistSingleCardView(
+                    profile = prof,
+                    language = language,
+                    showRoleBadge = true,
+                    trackArtFallback = trackArtFallback,
+                    modifier = Modifier.fillMaxWidth(),
+                    onNavigateToArtist = onNavigateToArtist
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Sleek cardholder slot representing an inactive/stacked card in the Tarjetero deck.
+ */
+@Composable
+fun ArtistTarjeteroSlot(
+    profile: com.example.data.ArtistProfile,
+    language: String,
+    index: Int,
+    totalInDeck: Int,
+    onClick: () -> Unit,
+    trackArtFallback: Any? = null
+) {
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val cardBg = if (isLight) Color(0xFFF7F7F9) else Color(0xFF22222A)
+    val textPrimary = if (isLight) Color(0xFF111111) else Color.White
+    val textSecondary = if (isLight) Color(0xFF666666) else Color.White.copy(alpha = 0.65f)
+    val borderColor = if (isLight) Color(0x22000000) else Color(0x33FFFFFF)
+
+    val thumbModel = profile.info.imageUrl ?: trackArtFallback
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Card slot thumbnail
+                if (thumbModel != null) {
+                    val modelToLoad: Any = if (thumbModel is String && thumbModel.startsWith("/")) {
+                        File(thumbModel)
+                    } else thumbModel
+
+                    AsyncImage(
+                        model = modelToLoad,
+                        contentDescription = profile.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isLight) Color(0x18000000) else Color(0x28FFFFFF)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = null,
+                            tint = textPrimary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = profile.name,
+                        color = textPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else (if (isLight) Color(0x12000000) else Color(0x1FFFFFFF))
+                        ) {
+                            Text(
+                                text = if (profile.isPrimary) {
+                                    if (language.startsWith("es", ignoreCase = true)) "Principal" else "Main Artist"
+                                } else {
+                                    if (language.startsWith("es", ignoreCase = true)) "Colaborador" else "Featured"
+                                },
+                                color = if (profile.isPrimary) MaterialTheme.colorScheme.primary else textSecondary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+
+                        if (profile.info.origin.isNotBlank() && profile.info.origin != "Unknown") {
+                            Text(
+                                text = "• ${profile.info.origin}",
+                                color = textSecondary,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else if (profile.info.followers.isNotBlank()) {
+                            Text(
+                                text = "• ${profile.info.followers}",
+                                color = textSecondary,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Peek action pill
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = if (language.startsWith("es", ignoreCase = true)) "Abrir" else "Open",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Expand",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Individual Layered Card inside the Tarjetero deck.
+ */
+@Composable
+fun ArtistDeckCardItem(
+    profile: com.example.data.ArtistProfile,
+    isExpanded: Boolean,
+    language: String,
+    indexInDeck: Int,
+    onToggle: () -> Unit,
+    onNavigateToArtist: ((String) -> Unit)? = null
+) {
+    ArtistSingleCardView(
+        profile = profile,
+        language = language,
+        showRoleBadge = true,
+        modifier = Modifier.fillMaxWidth(),
+        onNavigateToArtist = onNavigateToArtist
+    )
+}
+
+@Suppress("unused")
+@Composable
+private fun UnusedDeckLegacyBody(
+    profile: com.example.data.ArtistProfile,
+    isExpanded: Boolean,
+    language: String,
+    onToggle: () -> Unit,
+    onNavigateToArtist: ((String) -> Unit)? = null
 ) {
     val uriHandler = LocalUriHandler.current
-    val artistName = track?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: "Unknown Artist"
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val cardBg = if (isLight) Color(0xFFFFFFFF) else Color(0xFF1E1E28)
+    val textPrimary = if (isLight) Color(0xFF111111) else Color.White
+    val textSecondary = if (isLight) Color(0xFF555555) else Color.White.copy(alpha = 0.65f)
+    val borderColor = if (isExpanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.45f) else (if (isLight) Color(0x1F000000) else Color(0x22FFFFFF))
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Card Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggle() }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    if (profile.info.imageUrl != null) {
+                        AsyncImage(
+                            model = profile.info.imageUrl,
+                            contentDescription = profile.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .border(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), CircleShape)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(if (isLight) Color(0x15000000) else Color(0x22FFFFFF)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = textPrimary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = profile.name,
+                            color = textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Spacer(modifier = Modifier.height(2.dp))
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else (if (isLight) Color(0x12000000) else Color(0x1FFFFFFF))
+                            ) {
+                                Text(
+                                    text = if (profile.isPrimary) {
+                                        if (language.startsWith("es", ignoreCase = true)) "Principal" else "Main Artist"
+                                    } else {
+                                        if (language.startsWith("es", ignoreCase = true)) "Colaborador" else "Featured"
+                                    },
+                                    color = if (profile.isPrimary) MaterialTheme.colorScheme.primary else textSecondary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+
+                            if (profile.info.origin.isNotBlank() && profile.info.origin != "Unknown") {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "• ${profile.info.origin}",
+                                    color = textSecondary,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+
+                IconButton(
+                    onClick = { onToggle() },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (isExpanded) "Collapse" else "Expand",
+                        tint = if (isExpanded) MaterialTheme.colorScheme.primary else textSecondary
+                    )
+                }
+            }
+
+            // Expanded Layer Content
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (profile.info.imageUrl != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                        ) {
+                            AsyncImage(
+                                model = profile.info.imageUrl,
+                                contentDescription = profile.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            colors = if (isLight) {
+                                                listOf(Color.Transparent, Color(0x88FFFFFF), Color(0xFFFFFFFF))
+                                            } else {
+                                                listOf(Color.Transparent, Color(0x881E1E28), Color(0xFF1E1E28))
+                                            },
+                                            startY = 40f
+                                        )
+                                    )
+                            )
+                        }
+                    }
+
+                    // Stats row
+                    val hasFollowers = profile.info.followers.isNotBlank()
+                    val hasOrigin = profile.info.origin.isNotBlank() && profile.info.origin != "Unknown"
+                    if (hasFollowers || hasOrigin) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp)
+                        ) {
+                            if (hasFollowers) {
+                                Column {
+                                    Text(
+                                        text = profile.info.followers,
+                                        color = textPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Text(
+                                        text = if (language.startsWith("es", ignoreCase = true)) "Seguidores" else "Followers",
+                                        color = textSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            if (hasOrigin) {
+                                Column {
+                                    Text(
+                                        text = profile.info.origin,
+                                        color = textPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                    Text(
+                                        text = if (language.startsWith("es", ignoreCase = true)) "Origen" else "Origin",
+                                        color = textSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Biography with conditional translation
+                    var isBioExpanded by remember { mutableStateOf(false) }
+                    val rawBio = profile.info.bio
+                    val targetLangCode = remember(language) { com.example.data.TranslationHelper.mapToLanguageCode(language) }
+                    val isAlreadyTarget = remember(rawBio, targetLangCode) {
+                        if (rawBio.isNullOrBlank()) true
+                        else com.example.data.TranslationHelper.isAlreadyInTargetLanguage(rawBio, targetLangCode)
+                    }
+
+                    var translatedBio by remember(rawBio, targetLangCode) { mutableStateOf<String?>(null) }
+                    var isTranslating by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+                    var showTranslated by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+                    val coroutineScope = rememberCoroutineScope()
+
+                    val displayBioText = when {
+                        showTranslated && !translatedBio.isNullOrBlank() -> translatedBio!!
+                        !rawBio.isNullOrBlank() -> rawBio
+                        else -> Translations.get(language, "no_info_available")
+                    }
+
+                    Text(
+                        text = displayBioText,
+                        color = if (isLight) Color(0xFF333333) else Color.White.copy(alpha = 0.85f),
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        maxLines = if (isBioExpanded) Int.MAX_VALUE else 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .clickable { isBioExpanded = !isBioExpanded }
+                    )
+
+                    // Bio Action Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (!rawBio.isNullOrBlank() && rawBio.length > 120) {
+                            Text(
+                                text = if (isBioExpanded) Translations.get(language, "show_less") else Translations.get(language, "read_more"),
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { isBioExpanded = !isBioExpanded }
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.width(1.dp))
+                        }
+
+                        if (!rawBio.isNullOrBlank()) {
+                            if (isAlreadyTarget) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isLight) Color(0x10000000) else Color(0x15FFFFFF)
+                                ) {
+                                    Text(
+                                        text = if (language.startsWith("es", ignoreCase = true)) "✓ En español" else "✓ In app language",
+                                        color = textSecondary,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                    )
+                                }
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(enabled = !isTranslating) {
+                                            if (showTranslated) {
+                                                showTranslated = false
+                                            } else if (!translatedBio.isNullOrBlank()) {
+                                                showTranslated = true
+                                            } else {
+                                                isTranslating = true
+                                                coroutineScope.launch {
+                                                    val result = com.example.data.TranslationHelper.translateText(rawBio, language)
+                                                    translatedBio = result
+                                                    showTranslated = true
+                                                    isTranslating = false
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Language,
+                                        contentDescription = "Translate",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = when {
+                                            isTranslating -> Translations.get(language, "translating_bio")
+                                            showTranslated -> Translations.get(language, "original_text")
+                                            else -> Translations.get(language, "translate_bio")
+                                        },
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Social links
+                    val hasSocials = !profile.info.spotify.isNullOrBlank() ||
+                            !profile.info.instagram.isNullOrBlank() ||
+                            !profile.info.youtube.isNullOrBlank() ||
+                            !profile.info.appleMusic.isNullOrBlank() ||
+                            !profile.info.twitter.isNullOrBlank() ||
+                            !profile.info.facebook.isNullOrBlank() ||
+                            !profile.info.website.isNullOrBlank()
+
+                    if (hasSocials) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.Start,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (!profile.info.spotify.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(getSpotifyArtistUrl(profile.name, profile.info.spotify)) }) {
+                                    Icon(SpotifyIcon, contentDescription = "Spotify", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            if (!profile.info.instagram.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(formatUrl(profile.info.instagram!!)) }) {
+                                    Icon(InstagramIcon, contentDescription = "Instagram", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            if (!profile.info.youtube.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(formatUrl(profile.info.youtube!!)) }) {
+                                    Icon(YouTubeIcon, contentDescription = "YouTube", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            if (!profile.info.appleMusic.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(formatUrl(profile.info.appleMusic!!)) }) {
+                                    Icon(AppleMusicIcon, contentDescription = "Apple Music", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            if (!profile.info.twitter.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(formatUrl(profile.info.twitter!!)) }) {
+                                    Icon(TwitterIcon, contentDescription = "Twitter", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            if (!profile.info.website.isNullOrBlank()) {
+                                IconButton(onClick = { uriHandler.openUri(formatUrl(profile.info.website!!)) }) {
+                                    Icon(Icons.Default.Language, contentDescription = "Website", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    // Navigate to artist discography button
+                    if (onNavigateToArtist != null) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .clickable { onNavigateToArtist(profile.name) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp, horizontal = 12.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (language.startsWith("es", ignoreCase = true)) "Ver más de ${profile.name}" else "More from ${profile.name}",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Artist Card View displaying complete artist info, banner image, followers, origin, biography and socials.
+ * Used for both single-artist tracks and multi-artist tracks (where each artist gets their own full card).
+ */
+@Composable
+fun ArtistSingleCardView(
+    profile: com.example.data.ArtistProfile,
+    language: String,
+    modifier: Modifier = Modifier,
+    showRoleBadge: Boolean = false,
+    trackArtFallback: Any? = null,
+    onNavigateToArtist: ((String) -> Unit)? = null
+) {
+    val uriHandler = LocalUriHandler.current
+    val artistName = profile.name
+    val artistInfo = profile.info
+    val displayBanner = artistInfo.imageUrl ?: trackArtFallback
+    val bannerModel: Any? = if (displayBanner is String && displayBanner.startsWith("/")) {
+        File(displayBanner)
+    } else displayBanner
 
     val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
     val cardBg = if (isLight) Color(0xFFFFFFFF) else Color(0xFF1E1E1E)
@@ -77,20 +1008,18 @@ fun ArtistInfoCard(
         border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder),
         shape = RoundedCornerShape(20.dp)
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            // Header: Hero Banner if image is available, otherwise stylized avatar row
-            if (artistInfo?.imageUrl != null) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (displayBanner != null) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp)
+                        .height(300.dp)
                 ) {
                     AsyncImage(
-                        model = artistInfo.imageUrl,
+                        model = bannerModel,
                         contentDescription = "Artist Banner",
                         contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
                         modifier = Modifier.fillMaxSize()
                     )
                     Box(
@@ -101,24 +1030,28 @@ fun ArtistInfoCard(
                                     colors = if (isLight) {
                                         listOf(
                                             Color.Transparent,
+                                            Color.Transparent,
                                             Color(0x99FFFFFF),
                                             Color(0xFFFFFFFF)
                                         )
                                     } else {
                                         listOf(
                                             Color.Transparent,
-                                            Color(0x771E1E1E),
+                                            Color.Transparent,
+                                            Color(0x881E1E1E),
                                             Color(0xFF1E1E1E)
                                         )
                                     },
-                                    startY = 50f
+                                    startY = 180f
                                 )
                             )
                     )
-                    Column(
+                    Row(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
-                            .padding(18.dp)
+                            .padding(18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
                             text = artistName,
@@ -126,8 +1059,34 @@ fun ArtistInfoCard(
                             fontWeight = FontWeight.Black,
                             fontSize = 22.sp,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
+
+                        if (showRoleBadge) {
+                            val isSpanish = language.startsWith("es", ignoreCase = true)
+                            val badgeText = if (profile.isPrimary) {
+                                if (isSpanish) "Principal" else "Main Artist"
+                            } else {
+                                if (isSpanish) "Colaborador" else "Featured"
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else (if (isLight) Color(0x1A000000) else Color(0x28FFFFFF)),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.7f) else (if (isLight) Color(0x28000000) else Color(0x35FFFFFF))
+                                )
+                            ) {
+                                Text(
+                                    text = badgeText,
+                                    color = if (profile.isPrimary) MaterialTheme.colorScheme.primary else textPrimary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
                     }
                 }
             } else {
@@ -153,21 +1112,52 @@ fun ArtistInfoCard(
                     }
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = artistName,
-                            color = textPrimary,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 20.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = artistName,
+                                color = textPrimary,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 20.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+
+                            if (showRoleBadge) {
+                                val isSpanish = language.startsWith("es", ignoreCase = true)
+                                val badgeText = if (profile.isPrimary) {
+                                    if (isSpanish) "Principal" else "Main Artist"
+                                } else {
+                                    if (isSpanish) "Colaborador" else "Featured"
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else (if (isLight) Color(0x1A000000) else Color(0x28FFFFFF)),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (profile.isPrimary) MaterialTheme.colorScheme.primary.copy(alpha = 0.7f) else (if (isLight) Color(0x28000000) else Color(0x35FFFFFF))
+                                    )
+                                ) {
+                                    Text(
+                                        text = badgeText,
+                                        color = if (profile.isPrimary) MaterialTheme.colorScheme.primary else textPrimary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
 
             // Stats row (Followers, Origin)
-            val hasFollowers = !artistInfo?.followers.isNullOrBlank()
-            val hasOrigin = !artistInfo?.origin.isNullOrBlank()
+            val hasFollowers = artistInfo.followers.isNotBlank()
+            val hasOrigin = artistInfo.origin.isNotBlank() && artistInfo.origin != "Unknown"
             if (hasFollowers || hasOrigin) {
                 Row(
                     modifier = Modifier
@@ -178,7 +1168,7 @@ fun ArtistInfoCard(
                     if (hasFollowers) {
                         Column {
                             Text(
-                                text = artistInfo!!.followers!!,
+                                text = artistInfo.followers,
                                 color = textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
@@ -193,7 +1183,7 @@ fun ArtistInfoCard(
                     if (hasOrigin) {
                         Column {
                             Text(
-                                text = artistInfo!!.origin!!,
+                                text = artistInfo.origin,
                                 color = textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp
@@ -208,13 +1198,28 @@ fun ArtistInfoCard(
                 }
             }
 
-            // Biography
+            // Biography with conditional translation
             var isBioExpanded by remember { mutableStateOf(false) }
-            val rawBio = artistInfo?.bio
-            val bioText = if (!rawBio.isNullOrBlank()) rawBio else Translations.get(language, "no_info_available")
+            val rawBio = artistInfo.bio
+            val targetLangCode = remember(language) { com.example.data.TranslationHelper.mapToLanguageCode(language) }
+            val isAlreadyTarget = remember(rawBio, targetLangCode) {
+                if (rawBio.isNullOrBlank()) true
+                else com.example.data.TranslationHelper.isAlreadyInTargetLanguage(rawBio, targetLangCode)
+            }
+
+            var translatedBio by remember(rawBio, targetLangCode) { mutableStateOf<String?>(null) }
+            var isTranslating by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+            var showTranslated by remember(rawBio, targetLangCode) { mutableStateOf(false) }
+            val coroutineScope = rememberCoroutineScope()
+
+            val displayBioText = when {
+                showTranslated && !translatedBio.isNullOrBlank() -> translatedBio!!
+                !rawBio.isNullOrBlank() -> rawBio
+                else -> Translations.get(language, "no_info_available")
+            }
 
             Text(
-                text = bioText,
+                text = displayBioText,
                 color = if (isLight) Color(0xFF333333) else Color.White.copy(alpha = 0.82f),
                 fontSize = 13.sp,
                 lineHeight = 19.sp,
@@ -226,26 +1231,91 @@ fun ArtistInfoCard(
                     .clickable { isBioExpanded = !isBioExpanded }
             )
 
-            if (!rawBio.isNullOrBlank() && rawBio.length > 130) {
-                Text(
-                    text = if (isBioExpanded) (if (language.startsWith("Esp", ignoreCase = true)) "Mostrar menos" else "Show less") else (if (language.startsWith("Esp", ignoreCase = true)) "Leer más" else "Read more"),
-                    color = MaterialTheme.colorScheme.primary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .padding(horizontal = 18.dp, vertical = 2.dp)
-                        .clickable { isBioExpanded = !isBioExpanded }
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (!rawBio.isNullOrBlank() && rawBio.length > 130) {
+                    Text(
+                        text = if (isBioExpanded) Translations.get(language, "show_less") else Translations.get(language, "read_more"),
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clickable { isBioExpanded = !isBioExpanded }
+                    )
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+
+                if (!rawBio.isNullOrBlank()) {
+                    if (isAlreadyTarget) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isLight) Color(0x10000000) else Color(0x15FFFFFF)
+                        ) {
+                            Text(
+                                text = if (language.startsWith("es", ignoreCase = true)) "✓ En español" else "✓ In app language",
+                                color = textSecondary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                            )
+                        }
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !isTranslating) {
+                                    if (showTranslated) {
+                                        showTranslated = false
+                                    } else if (!translatedBio.isNullOrBlank()) {
+                                        showTranslated = true
+                                    } else {
+                                        isTranslating = true
+                                        coroutineScope.launch {
+                                            val result = com.example.data.TranslationHelper.translateText(rawBio, language)
+                                            translatedBio = result
+                                            showTranslated = true
+                                            isTranslating = false
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = "Translate",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when {
+                                    isTranslating -> Translations.get(language, "translating_bio")
+                                    showTranslated -> Translations.get(language, "original_text")
+                                    else -> Translations.get(language, "translate_bio")
+                                },
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
             }
 
             // Social links
-            val hasSocials = !artistInfo?.website.isNullOrBlank() ||
-                    !artistInfo?.facebook.isNullOrBlank() ||
-                    !artistInfo?.twitter.isNullOrBlank() ||
-                    !artistInfo?.instagram.isNullOrBlank() ||
-                    !artistInfo?.spotify.isNullOrBlank() ||
-                    !artistInfo?.youtube.isNullOrBlank() ||
-                    !artistInfo?.appleMusic.isNullOrBlank()
+            val hasSocials = !artistInfo.website.isNullOrBlank() ||
+                    !artistInfo.facebook.isNullOrBlank() ||
+                    !artistInfo.twitter.isNullOrBlank() ||
+                    !artistInfo.instagram.isNullOrBlank() ||
+                    !artistInfo.spotify.isNullOrBlank() ||
+                    !artistInfo.youtube.isNullOrBlank() ||
+                    !artistInfo.appleMusic.isNullOrBlank()
 
             if (hasSocials) {
                 Spacer(modifier = Modifier.height(10.dp))
@@ -256,40 +1326,68 @@ fun ArtistInfoCard(
                     horizontalArrangement = Arrangement.Start,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (!artistInfo?.spotify.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.spotify!!)) }) {
+                    if (!artistInfo.spotify.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(getSpotifyArtistUrl(artistName, artistInfo.spotify)) }) {
                             Icon(SpotifyIcon, contentDescription = "Spotify", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.instagram.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.instagram!!)) }) {
+                    if (!artistInfo.instagram.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.instagram!!)) }) {
                             Icon(InstagramIcon, contentDescription = "Instagram", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.youtube.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.youtube!!)) }) {
+                    if (!artistInfo.youtube.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.youtube!!)) }) {
                             Icon(YouTubeIcon, contentDescription = "YouTube", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.appleMusic.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.appleMusic!!)) }) {
+                    if (!artistInfo.appleMusic.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.appleMusic!!)) }) {
                             Icon(AppleMusicIcon, contentDescription = "Apple Music", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.twitter.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.twitter!!)) }) {
+                    if (!artistInfo.twitter.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.twitter!!)) }) {
                             Icon(TwitterIcon, contentDescription = "Twitter", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.facebook.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.facebook!!)) }) {
+                    if (!artistInfo.facebook.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.facebook!!)) }) {
                             Icon(FacebookIcon, contentDescription = "Facebook", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
                     }
-                    if (!artistInfo?.website.isNullOrBlank()) {
-                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo!!.website!!)) }) {
+                    if (!artistInfo.website.isNullOrBlank()) {
+                        IconButton(onClick = { uriHandler.openUri(formatUrl(artistInfo.website!!)) }) {
                             Icon(Icons.Default.Language, contentDescription = "Website", tint = Color.White, modifier = Modifier.size(20.dp))
                         }
+                    }
+                }
+            }
+
+            // Navigate to artist discography button
+            if (onNavigateToArtist != null) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 6.dp)
+                        .clickable { onNavigateToArtist(profile.name) },
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 9.dp, horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (language.startsWith("es", ignoreCase = true)) "Ver más de ${profile.name}" else "More from ${profile.name}",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -360,7 +1458,7 @@ fun ArtistInfoTab(
                     
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = track?.artist ?: "Unknown Artist",
+                            text = track?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: Translations.get(language, "unknown_artist"),
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
@@ -377,7 +1475,7 @@ fun ArtistInfoTab(
                 
                 Icon(
                     imageVector = if (expanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
-                    contentDescription = "Expandir/Contraer",
+                    contentDescription = null,
                     tint = Color.White.copy(alpha = 0.7f)
                 )
             }
@@ -411,6 +1509,23 @@ fun ArtistInfoTab(
                     Spacer(modifier = Modifier.height(16.dp))
                     
                     // Bio
+                    var tabTranslatedBio by remember(artistInfo?.bio, language) { mutableStateOf<String?>(null) }
+                    var tabIsTranslating by remember(artistInfo?.bio, language) { mutableStateOf(false) }
+                    var tabShowTranslated by remember(artistInfo?.bio, language) { mutableStateOf(false) }
+                    val tabScope = rememberCoroutineScope()
+                    val tabRawBio = artistInfo?.bio
+                    val tabTargetLang = remember(language) { com.example.data.TranslationHelper.mapToLanguageCode(language) }
+                    val tabIsAlreadyTarget = remember(tabRawBio, tabTargetLang) {
+                        if (tabRawBio.isNullOrBlank()) true
+                        else com.example.data.TranslationHelper.isAlreadyInTargetLanguage(tabRawBio, tabTargetLang)
+                    }
+
+                    val tabDisplayBio = when {
+                        tabShowTranslated && !tabTranslatedBio.isNullOrBlank() -> tabTranslatedBio!!
+                        !tabRawBio.isNullOrBlank() -> tabRawBio
+                        else -> Translations.get(language, "no_info_available")
+                    }
+
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -418,11 +1533,54 @@ fun ArtistInfoTab(
                             .verticalScroll(rememberScrollState())
                     ) {
                         Text(
-                            text = artistInfo?.bio ?: Translations.get(language, "no_info_available"),
+                            text = tabDisplayBio,
                             color = Color.White.copy(alpha = 0.85f),
                             fontSize = 13.sp,
                             lineHeight = 18.sp
                         )
+                    }
+
+                    if (!tabRawBio.isNullOrBlank() && !tabIsAlreadyTarget) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !tabIsTranslating) {
+                                    if (tabShowTranslated) {
+                                        tabShowTranslated = false
+                                    } else if (!tabTranslatedBio.isNullOrBlank()) {
+                                        tabShowTranslated = true
+                                    } else {
+                                        tabIsTranslating = true
+                                        tabScope.launch {
+                                            val res = com.example.data.TranslationHelper.translateText(tabRawBio, language)
+                                            tabTranslatedBio = res
+                                            tabShowTranslated = true
+                                            tabIsTranslating = false
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = "Translate",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when {
+                                    tabIsTranslating -> Translations.get(language, "translating_bio")
+                                    tabShowTranslated -> Translations.get(language, "original_text")
+                                    else -> Translations.get(language, "translate_bio")
+                                },
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                     
                     // Social Links
@@ -462,6 +1620,17 @@ private fun formatUrl(url: String): String {
     } else {
         url
     }
+}
+
+private fun getSpotifyArtistUrl(artistName: String, candidateUrl: String?): String {
+    val cleanName = artistName.trim()
+    val encoded = android.net.Uri.encode(cleanName)
+    if (!candidateUrl.isNullOrBlank() && 
+        (candidateUrl.contains("spotify.com/artist/") || candidateUrl.contains(encoded, ignoreCase = true))
+    ) {
+        return formatUrl(candidateUrl)
+    }
+    return "https://open.spotify.com/search/$encoded"
 }
 
 

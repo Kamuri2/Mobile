@@ -28,13 +28,18 @@ import com.example.data.local.UserEntity
 import com.example.ui.components.LiquidGlassBackground
 import com.example.ui.theme.GlassTextMuted
 
+import com.example.model.AppSettings
+import com.example.ui.Translations
+
 @Composable
 fun UserProfileScreen(
     userProfile: UserEntity?,
     socialRepository: SocialRepository,
     onBack: () -> Unit,
-    onPlaylistClick: (String) -> Unit
+    onPlaylistClick: (String) -> Unit,
+    settings: AppSettings? = null
 ) {
+    val lang = settings?.appLanguage ?: "English"
     val playlists by socialRepository.getAllPlaylists().collectAsState(initial = emptyList())
     val topArtists by socialRepository.getTopArtistsToday().collectAsState(initial = emptyList())
 
@@ -67,7 +72,11 @@ fun UserProfileScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = Translations.get(lang, "back"),
+                        tint = MaterialTheme.colorScheme.onBackground
+                    )
                 }
             }
 
@@ -109,16 +118,10 @@ fun UserProfileScreen(
                         Spacer(modifier = Modifier.width(24.dp))
                         Column {
                             Text(
-                                text = userProfile?.name ?: "Unknown",
+                                text = userProfile?.name ?: Translations.get(lang, "user_default_name", "User"),
                                 color = MaterialTheme.colorScheme.onBackground,
                                 fontSize = 32.sp,
                                 fontWeight = FontWeight.Black
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "0 followers • 0 following",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 14.sp
                             )
                         }
                     }
@@ -131,14 +134,23 @@ fun UserProfileScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Playlists", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = Translations.get(lang, "playlists"),
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
                 
                 if (playlists.isEmpty()) {
                     item {
-                        Text("No playlists yet.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 16.dp))
+                        Text(
+                            text = Translations.get(lang, "no_playlists_user"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 16.dp)
+                        )
                     }
                 } else {
                     items(playlists) { playlist ->
@@ -175,11 +187,14 @@ fun UserProfileScreen(
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Normal
                                 )
-                                Text(
-                                    text = playlist.description?.ifEmpty { "0 saves" } ?: "0 saves",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 14.sp
-                                )
+                                val desc = playlist.description?.ifBlank { "" } ?: ""
+                                if (desc.isNotBlank()) {
+                                    Text(
+                                        text = desc,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 14.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -188,7 +203,12 @@ fun UserProfileScreen(
                 // Top Artists Today
                 if (topArtists.isNotEmpty()) {
                     item {
-                        Text("Recently played artists", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = Translations.get(lang, "recently_played_artists"),
+                            color = MaterialTheme.colorScheme.onBackground,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                         Spacer(modifier = Modifier.height(16.dp))
                     }
                     items(topArtists) { artist ->

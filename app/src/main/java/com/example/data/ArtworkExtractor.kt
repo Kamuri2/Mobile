@@ -38,6 +38,12 @@ object ArtworkExtractor {
     val dominantColorCache = java.util.Collections.synchronizedMap(mutableMapOf<String, Color>())
     private val negativeCache = java.util.Collections.synchronizedSet(HashSet<String>())
 
+    fun resetArtworkCaches() {
+        cache.evictAll()
+        dominantColorCache.clear()
+        negativeCache.clear()
+    }
+
     fun getCacheKey(track: Track): String {
         val albumKey = AlbumArtExtractor.getAlbumKey(track)
         if (albumKey != null) return albumKey
@@ -90,13 +96,12 @@ object ArtworkExtractor {
     fun loadArtworkBitmap(context: Context, track: Track, targetDim: Int = 600): Bitmap? {
         val key = getCacheKey(track)
         if (key.isNotBlank()) {
-            if (negativeCache.contains(key)) return null
             cache.get(key)?.let { return it }
         }
 
-        // 1. Check pre-extracted HD disk cache (0 ms)
+        // 1. Check pre-extracted HD disk cache (0 ms) or extract now
         try {
-            val hdFile = AlbumArtExtractor(context).getExistingArtFile(track)
+            val hdFile = AlbumArtExtractor(context).getExistingArtFile(track) ?: AlbumArtExtractor(context).getHighResArt(track)
             if (hdFile != null && hdFile.exists() && hdFile.length() > 0) {
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(hdFile.absolutePath, opts)
@@ -117,20 +122,41 @@ object ArtworkExtractor {
             }
         } catch (_: Exception) {}
 
-        // 2. Try JAudioTagger / Vorbis / Sidecar extraction directly (pure Kotlin/Java, no JNI errors)
-        var fileTagChecked = false
-        if (track.path.isNotBlank()) {
+        // 2. Try albumArtUri directly if available
+        if (track.albumArtUri != null) {
             try {
-                val file = File(track.path)
-                if (file.exists() && file.canRead()) {
-                    val audioFile = org.jaudiotagger.audio.AudioFileIO.read(file)
-                    if (audioFile.tag != null) {
-                        fileTagChecked = true
+                context.contentResolver.openInputStream(track.albumArtUri)?.use { stream ->
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeStream(stream, null, opts)
+                    var sampleSize = 1
+                    while (opts.outWidth / (sampleSize * 2) >= targetDim &&
+                           opts.outHeight / (sampleSize * 2) >= targetDim) {
+                        sampleSize *= 2
+                    }
+                    context.contentResolver.openInputStream(track.albumArtUri)?.use { stream2 ->
+                        val decodeOpts = BitmapFactory.Options().apply {
+                            inSampleSize = sampleSize
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                        }
+                        val bitmap = BitmapFactory.decodeStream(stream2, null, decodeOpts)
+                        if (bitmap != null) {
+                            if (key.isNotBlank()) cache.put(key, bitmap)
+                            return bitmap
+                        }
                     }
                 }
             } catch (_: Exception) {}
         }
 
+        var tagChecked = false
+        if (track.path.isNotBlank()) {
+            val file = File(track.path)
+            if (file.exists() && file.canRead()) {
+                tagChecked = true
+            }
+        }
+
+        // 2. Try extraction directly from audio file tags or sidecar
         val rawBytes = extractArtworkBytes(context, track)
         if (rawBytes != null && rawBytes.isNotEmpty()) {
             val bitmap = decodeSampledBitmapFromByteArray(rawBytes, targetDim)
@@ -140,17 +166,19 @@ object ArtworkExtractor {
             }
         }
 
-        // 3. Fallback to MediaMetadataRetriever (always fallback if JAudioTagger didn't return art)
-        if (track.contentUri != Uri.EMPTY) {
-            getAlbumArtDownsampled(context, track.contentUri, targetDim)?.let { bitmap ->
-                if (key.isNotBlank()) cache.put(key, bitmap)
-                return bitmap
+        // 3. Fallback to MediaMetadataRetriever ONLY if local file tags could not be checked
+        if (!tagChecked) {
+            if (track.contentUri != Uri.EMPTY) {
+                getAlbumArtDownsampled(context, track.contentUri, targetDim)?.let { bitmap ->
+                    if (key.isNotBlank()) cache.put(key, bitmap)
+                    return bitmap
+                }
             }
-        }
-        if (track.path.isNotBlank()) {
-            getAlbumArtDownsampled(track.path, targetDim)?.let { bitmap ->
-                if (key.isNotBlank()) cache.put(key, bitmap)
-                return bitmap
+            if (track.path.isNotBlank()) {
+                getAlbumArtDownsampled(track.path, targetDim)?.let { bitmap ->
+                    if (key.isNotBlank()) cache.put(key, bitmap)
+                    return bitmap
+                }
             }
         }
 
@@ -180,6 +208,9 @@ object ArtworkExtractor {
             } catch (_: Exception) {}
         }
 
+        if (key.isNotBlank()) {
+            negativeCache.add(key)
+        }
         return null
     }
 
@@ -192,10 +223,16 @@ object ArtworkExtractor {
         uri: Uri,
         targetSize: Int = 600
     ): Bitmap? {
+        val uriStr = uri.toString()
+        if (negativeCache.contains(uriStr)) return null
+
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, uri)
-            val bytes = retriever.embeddedPicture ?: return null
+            val bytes = retriever.embeddedPicture ?: run {
+                negativeCache.add(uriStr)
+                return null
+            }
 
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
@@ -212,6 +249,7 @@ object ArtworkExtractor {
             }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
         } catch (e: Exception) {
+            negativeCache.add(uriStr)
             null
         } finally {
             try { retriever.release() } catch (e: Exception) {}
@@ -222,13 +260,17 @@ object ArtworkExtractor {
         path: String,
         targetSize: Int = 600
     ): Bitmap? {
+        if (negativeCache.contains(path)) return null
         val file = File(path)
         if (!file.exists() || !file.canRead()) return null
 
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(path)
-            val bytes = retriever.embeddedPicture ?: return null
+            val bytes = retriever.embeddedPicture ?: run {
+                negativeCache.add(path)
+                return null
+            }
 
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
@@ -245,6 +287,7 @@ object ArtworkExtractor {
             }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
         } catch (e: Exception) {
+            negativeCache.add(path)
             null
         } finally {
             try { retriever.release() } catch (e: Exception) {}
@@ -581,6 +624,61 @@ object ArtworkExtractor {
         }
     }
 
+    fun getDominantColorFromUri(context: Context, uriStr: String?): Color? {
+        if (uriStr.isNullOrBlank()) return null
+        dominantColorCache[uriStr]?.let { return it }
+
+        try {
+            val uri = Uri.parse(uriStr)
+            val inputStream = if (uri.scheme == "content" || uri.scheme == "file" || uri.scheme == "android.resource") {
+                context.contentResolver.openInputStream(uri)
+            } else if (uriStr.startsWith("/")) {
+                val f = File(uriStr)
+                if (f.exists()) f.inputStream() else null
+            } else {
+                null
+            }
+
+            inputStream?.use { stream ->
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = 4
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                val bitmap = BitmapFactory.decodeStream(stream, null, opts)
+                if (bitmap != null) {
+                    val color = extractDominantColor(bitmap)
+                    if (color != null) {
+                        dominantColorCache[uriStr] = color
+                        return color
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "getDominantColorFromUri error: ${e.message}")
+        }
+        return null
+    }
+
+    @Composable
+    fun rememberUriDominantColor(
+        uriStr: String?,
+        defaultColor: Color = MaterialTheme.colorScheme.primary
+    ): Color {
+        val context = LocalContext.current
+        val cached = remember(uriStr) { if (!uriStr.isNullOrBlank()) dominantColorCache[uriStr] else null }
+        val colorState = produceState(initialValue = cached ?: defaultColor, key1 = uriStr) {
+            if (cached == null && !uriStr.isNullOrBlank()) {
+                val color = withContext(Dispatchers.IO) {
+                    getDominantColorFromUri(context, uriStr)
+                }
+                if (color != null) {
+                    value = color
+                }
+            }
+        }
+        return colorState.value
+    }
+
     @Composable
     fun rememberTrackDominantColor(
         track: Track?,
@@ -608,5 +706,11 @@ fun rememberTrackDominantColor(
     track: Track?,
     defaultColor: Color = MaterialTheme.colorScheme.primary
 ): Color = ArtworkExtractor.rememberTrackDominantColor(track, defaultColor)
+
+@Composable
+fun rememberUriDominantColor(
+    uriStr: String?,
+    defaultColor: Color = MaterialTheme.colorScheme.primary
+): Color = ArtworkExtractor.rememberUriDominantColor(uriStr, defaultColor)
 
 

@@ -38,6 +38,10 @@ import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -77,6 +81,11 @@ fun SettingsScreen(
     onUpdateSettings: (AppSettings) -> Unit,
     onBack: () -> Unit,
     onRescanAudio: () -> Unit,
+    onRepairCovers: (() -> Unit)? = null,
+    onClearCache: (() -> Unit)? = null,
+    isRescanning: Boolean = false,
+    isRepairingCovers: Boolean = false,
+    isClearingCache: Boolean = false,
     onStartTour: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -239,56 +248,6 @@ fun SettingsScreen(
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(18.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(dividerColor)
-                )
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // Crossfade Duration (Default 100 ms / 0.1 s)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Crossfade",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = textColorPrimary
-                    )
-                    Text(
-                        text = if (settings.crossfadeDuration <= 0.15f) "100 ms" else String.format(java.util.Locale.US, "%.1f s", settings.crossfadeDuration),
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textColorPrimary
-                    )
-                }
-                Spacer(modifier = Modifier.height(2.dp))
-                Slider(
-                    value = settings.crossfadeDuration,
-                    onValueChange = {
-                        val snapped = if (it <= 0.15f) 0.1f else it
-                        onUpdateSettings(settings.copy(crossfadeDuration = snapped))
-                    },
-                    valueRange = 0f..5f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = if (isDark) Color.White else primaryColor,
-                        activeTrackColor = primaryColor,
-                        inactiveTrackColor = if (isDark) Color(0x33FFFFFF) else Color(0x22000000)
-                    )
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("0s", fontSize = 11.sp, color = textColorSecondary)
-                    Text("5s", fontSize = 11.sp, color = textColorSecondary)
-                }
             }
         }
 
@@ -401,7 +360,17 @@ fun SettingsScreen(
                                 .padding(horizontal = 14.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(text = settings.appLanguage, color = textColorPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            val currentDisplayLang = when (settings.appLanguage.lowercase()) {
+                                "system", "sistema", "system default" -> Translations.get(lang, "system_default")
+                                "spanish", "español", "es" -> "Español"
+                                "french", "français", "fr" -> "Français"
+                                "german", "deutsch", "de" -> "Deutsch"
+                                "italian", "italiano", "it" -> "Italiano"
+                                "portuguese", "português", "pt" -> "Português"
+                                "japanese", "日本語", "ja" -> "日本語"
+                                else -> "English"
+                            }
+                            Text(text = currentDisplayLang, color = textColorPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = textColorSecondary, modifier = Modifier.size(18.dp))
                         }
@@ -411,17 +380,40 @@ fun SettingsScreen(
                             onDismissRequest = { expandedLang = false },
                             modifier = Modifier.background(if (isDark) Color(0xFF22222A) else Color(0xFFFFFFFF))
                         ) {
-                            listOf("English", "Spanish", "French", "German", "Italian", "Portuguese", "Japanese").forEach { languageOption ->
+                            listOf("System", "English", "Spanish", "French", "German", "Italian", "Portuguese", "Japanese").forEach { languageOption ->
+                                val displayOption = when (languageOption) {
+                                    "System" -> Translations.get(lang, "system_default")
+                                    "English" -> "English"
+                                    "Spanish" -> "Español"
+                                    "French" -> "Français"
+                                    "German" -> "Deutsch"
+                                    "Italian" -> "Italiano"
+                                    "Portuguese" -> "Português"
+                                    "Japanese" -> "日本語"
+                                    else -> languageOption
+                                }
+                                val isSelected = if (languageOption == "System") {
+                                    settings.appLanguage.equals("System", ignoreCase = true)
+                                } else {
+                                    settings.appLanguage.equals(languageOption, ignoreCase = true)
+                                }
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = languageOption,
-                                            color = if (settings.appLanguage == languageOption) primaryColor else textColorPrimary,
-                                            fontWeight = if (settings.appLanguage == languageOption) FontWeight.Bold else FontWeight.Normal
+                                            text = displayOption,
+                                            color = if (isSelected) primaryColor else textColorPrimary,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                         )
                                     },
                                     onClick = {
-                                        onUpdateSettings(settings.copy(appLanguage = languageOption))
+                                        if (languageOption == "System") {
+                                            com.example.ui.LanguageManager.cambiarIdioma("system")
+                                            onUpdateSettings(settings.copy(appLanguage = "System"))
+                                        } else {
+                                            val code = com.example.ui.LanguageManager.getLanguageCode(languageOption)
+                                            com.example.ui.LanguageManager.cambiarIdioma(code)
+                                            onUpdateSettings(settings.copy(appLanguage = languageOption))
+                                        }
                                         expandedLang = false
                                     }
                                 )
@@ -810,19 +802,129 @@ fun SettingsScreen(
                                 listOf(primaryColor, primaryColor.copy(alpha = 0.75f))
                             )
                         )
-                        .clickable { onRescanAudio() }
+                        .clickable(enabled = !isRescanning && !isRepairingCovers) { onRescanAudio() }
                         .padding(vertical = 14.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = Translations.get(lang, "rescan_now"),
-                            color = Color.Black,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        if (isRescanning) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color.Black,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = Translations.get(lang, "rescanning_library"),
+                                color = Color.Black,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = Translations.get(lang, "rescan_now"),
+                                color = Color.Black,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                if (onRepairCovers != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isDark) Color(0x22FFFFFF) else Color(0x14000000))
+                            .border(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x22000000), RoundedCornerShape(14.dp))
+                            .clickable(enabled = !isRescanning && !isRepairingCovers) { onRepairCovers() }
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isRepairingCovers) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = primaryColor,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = Translations.get(lang, "repairing_covers_toast"),
+                                    color = textColorPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Icon(imageVector = Icons.Default.AutoFixHigh, contentDescription = null, tint = primaryColor, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = Translations.get(lang, "repair_covers_now"),
+                                    color = textColorPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (onClearCache != null) {
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = Translations.get(lang, "clear_cache_desc"),
+                        fontSize = 12.sp,
+                        color = textColorMuted
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(if (isDark) Color(0x22EF4444) else Color(0x12EF4444))
+                            .border(1.dp, if (isDark) Color(0x44EF4444) else Color(0x30EF4444), RoundedCornerShape(14.dp))
+                            .clickable(enabled = !isRescanning && !isRepairingCovers && !isClearingCache) { onClearCache() }
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (isClearingCache) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = Color(0xFFEF4444),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = Translations.get(lang, "clearing_cache_toast"),
+                                    color = Color(0xFFEF4444),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = null,
+                                    tint = Color(0xFFEF4444),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = Translations.get(lang, "clear_cache_now"),
+                                    color = if (isDark) Color(0xFFFF6B6B) else Color(0xFFDC2626),
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -860,13 +962,13 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = Translations.get(lang, "quick_guide_title", "Guía de Inicio Rápido"),
+                                text = Translations.get(lang, "quick_guide_title"),
                                 color = textColorPrimary,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = Translations.get(lang, "quick_guide_subtitle", "Aprende a usar la navegación y gestos"),
+                                text = Translations.get(lang, "quick_guide_subtitle"),
                                 color = textColorSecondary,
                                 fontSize = 12.sp
                             )
@@ -897,7 +999,7 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = Translations.get(lang, "start_tour", "Ver tutorial interactivo"),
+                                text = Translations.get(lang, "start_tour"),
                                 color = Color.Black,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold

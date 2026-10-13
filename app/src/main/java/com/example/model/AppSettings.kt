@@ -26,7 +26,7 @@ enum class AppTheme(val displayName: String, val primaryColor: Color, val bgGrad
 
 data class AppSettings(
     val isDarkMode: Boolean = true,
-    val appLanguage: String = "English",
+    val appLanguage: String = "System",
     val selectedTheme: AppTheme = AppTheme.SUNSET,
     val fontFamilyName: String = "System Font (Default)",
     val lyricsFontSizePercent: Int = 110,

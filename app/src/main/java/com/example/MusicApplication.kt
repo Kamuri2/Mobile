@@ -7,6 +7,13 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 
 class MusicApplication : Application(), ImageLoaderFactory {
+    override fun onCreate() {
+        super.onCreate()
+        com.example.data.PersistentArtistStore.init(this)
+        com.example.data.ArtistImageRepository.init(this)
+        com.example.data.ArtistInfoFetcher.init(this)
+    }
+
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .memoryCache {

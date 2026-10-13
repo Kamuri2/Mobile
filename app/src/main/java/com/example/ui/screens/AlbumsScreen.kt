@@ -1,6 +1,6 @@
 package com.example.ui.screens
 
-
+import com.example.ui.Translations
 import androidx.compose.material3.MaterialTheme
 import android.graphics.BitmapFactory
 
@@ -176,7 +176,7 @@ fun AlbumsScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Buscar álbum...", color = Color.Gray) },
+                placeholder = { Text(Translations.get(settings.appLanguage, "search_album"), color = Color.Gray) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -271,7 +271,7 @@ fun AlbumsScreen(
 
             if (filteredAlbums.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(if (albumGroups.isEmpty()) com.example.ui.Translations.get(settings.appLanguage, "no_albums") else "No hay resultados", color = GlassTextMuted)
+                    Text(if (albumGroups.isEmpty()) com.example.ui.Translations.get(settings.appLanguage, "no_albums") else com.example.ui.Translations.get(settings.appLanguage, "no_results"), color = GlassTextMuted)
                 }
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -312,9 +312,9 @@ fun AlbumsScreen(
 
                                     Spacer(modifier = Modifier.height(10.dp))
 
-                                    Text(text = albumName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(text = albumName, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = if (settings.isDarkMode) Color.White else Color.Black, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Spacer(modifier = Modifier.height(2.dp))
-                                    Text(text = "${firstTrack?.artist ?: "Various"} • ${albumTracks.size} tracks", fontSize = 12.sp, color = GlassTextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(text = "${firstTrack?.artist ?: "Various"} • ${albumTracks.size} tracks", fontSize = 12.sp, color = if (settings.isDarkMode) GlassTextSecondary else Color(0xFF666666), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -369,9 +369,9 @@ fun AlbumDetailScreen(
     val primaryColor = settings.selectedTheme.primaryColor
     val isDarkMode = settings.isDarkMode
     val surfaceBg = if (isDarkMode) Color(0xFF121212) else Color(0xFFF7F7F9)
-    val textPrimary = if (isDarkMode) Color.White else Color(0xFF111111)
+    val textPrimary = if (isDarkMode) Color.White else Color.Black
     val textSecondary = if (isDarkMode) Color(0xB3FFFFFF) else Color(0xFF555555)
-    val iconTint = if (isDarkMode) Color.White else Color(0xFF1E1E1E)
+    val iconTint = if (isDarkMode) Color.White else Color.Black
     val isLightPrimary = (0.299f * primaryColor.red + 0.587f * primaryColor.green + 0.114f * primaryColor.blue) > 0.5f
     val playIconTint = if (isLightPrimary) Color.Black else Color.White
 
@@ -475,7 +475,7 @@ fun AlbumDetailScreen(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Artist Thumbnail and Name Row
-                val artistName = firstTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: "Various Artists"
+                val artistName = firstTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: Translations.get(settings.appLanguage, "various_artists")
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -519,13 +519,15 @@ fun AlbumDetailScreen(
 
                 // Album • Year • Tracks metadata line
                 val yearStr = firstTrack?.year?.takeIf { it > 0 }?.toString() ?: ""
+                val albumWord = Translations.get(settings.appLanguage, "album_capitalized")
+                val songsWord = if (tracks.size == 1) Translations.get(settings.appLanguage, "song_singular") else Translations.get(settings.appLanguage, "songs")
                 val metadataText = buildString {
-                    append("Álbum")
+                    append(albumWord)
                     if (yearStr.isNotBlank()) {
                         append(" • ").append(yearStr)
                     }
                     if (tracks.isNotEmpty()) {
-                        append(" • ").append(tracks.size).append(if (tracks.size == 1) " canción" else " canciones")
+                        append(" • ").append(tracks.size).append(" ").append(songsWord)
                     }
                 }
 
@@ -618,7 +620,7 @@ fun AlbumDetailScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
-                            contentDescription = if (isSpanish) "Opciones de canción" else "Song options",
+                            contentDescription = Translations.get(settings.appLanguage, "song_options"),
                             tint = textSecondary,
                             modifier = Modifier.size(20.dp)
                         )
@@ -635,7 +637,7 @@ fun AlbumDetailScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = if (isSpanish) "Reproducir a continuación" else "Play next",
+                                    text = Translations.get(settings.appLanguage, "play_next"),
                                     color = textPrimary,
                                     fontSize = 14.sp
                                 )
@@ -653,7 +655,7 @@ fun AlbumDetailScreen(
                                 onSetPlayNext?.invoke(track)
                                 Toast.makeText(
                                     context,
-                                    if (isSpanish) "Se reproducirá a continuación" else "Playing next",
+                                    Translations.get(settings.appLanguage, "playing_next_toast"),
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
@@ -665,7 +667,7 @@ fun AlbumDetailScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = if (isSpanish) "Agregar a playlist" else "Add to playlist",
+                                    text = Translations.get(settings.appLanguage, "add_to_playlist"),
                                     color = textPrimary,
                                     fontSize = 14.sp
                                 )
@@ -713,7 +715,7 @@ fun AlbumDetailScreen(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = if (isSpanish) "Agregar a playlist" else "Add to playlist",
+                        text = Translations.get(settings.appLanguage, "add_to_playlist"),
                         color = textPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
@@ -763,7 +765,7 @@ fun AlbumDetailScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = if (isSpanish) "Crear nueva playlist" else "Create new playlist",
+                                text = Translations.get(settings.appLanguage, "new_playlist"),
                                 color = primaryColor,
                                 fontWeight = FontWeight.Medium,
                                 fontSize = 14.sp
@@ -782,7 +784,7 @@ fun AlbumDetailScreen(
                                 onValueChange = { newPlaylistNameInput = it },
                                 placeholder = {
                                     Text(
-                                        if (isSpanish) "Nombre de la playlist" else "Playlist name",
+                                        Translations.get(settings.appLanguage, "list_name"),
                                         fontSize = 13.sp,
                                         color = Color.Gray
                                     )
@@ -804,7 +806,7 @@ fun AlbumDetailScreen(
                                     showCreateField = false
                                     newPlaylistNameInput = ""
                                 }) {
-                                    Text(if (isSpanish) "Cancelar" else "Cancel", color = GlassTextMuted, fontSize = 13.sp)
+                                    Text(Translations.get(settings.appLanguage, "cancel"), color = GlassTextMuted, fontSize = 13.sp)
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Button(
@@ -813,7 +815,7 @@ fun AlbumDetailScreen(
                                             onCreatePlaylistAndAdd?.invoke(newPlaylistNameInput.trim(), trackToAdd)
                                             Toast.makeText(
                                                 context,
-                                                if (isSpanish) "Playlist creada y canción añadida" else "Playlist created & song added",
+                                                Translations.get(settings.appLanguage, "playlist_created_and_song_added"),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                             selectedTrackForPlaylist = null
@@ -821,7 +823,7 @@ fun AlbumDetailScreen(
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = primaryColor)
                                 ) {
-                                    Text(if (isSpanish) "Crear y añadir" else "Create & add", fontSize = 13.sp, color = playIconTint)
+                                    Text(Translations.get(settings.appLanguage, "create_and_add"), fontSize = 13.sp, color = playIconTint)
                                 }
                             }
                         }
@@ -832,14 +834,14 @@ fun AlbumDetailScreen(
                     // Existing Playlists List
                     if (playlists.isEmpty()) {
                         Text(
-                            text = if (isSpanish) "Aún no tienes playlists creadas" else "No playlists created yet",
+                            text = Translations.get(settings.appLanguage, "no_playlists_created_yet"),
                             color = GlassTextMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(vertical = 8.dp)
                         )
                     } else {
                         Text(
-                            text = if (isSpanish) "Tus playlists" else "Your playlists",
+                            text = Translations.get(settings.appLanguage, "playlists"),
                             color = GlassTextMuted,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
@@ -860,7 +862,7 @@ fun AlbumDetailScreen(
                                             onAddToPlaylist?.invoke(playlist.playlistId, trackToAdd)
                                             Toast.makeText(
                                                 context,
-                                                if (isSpanish) "Añadida a ${playlist.name}" else "Added to ${playlist.name}",
+                                                playlist.name + " (" + Translations.get(settings.appLanguage, "add_label") + ")",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                             selectedTrackForPlaylist = null
@@ -909,7 +911,7 @@ fun AlbumDetailScreen(
             dismissButton = {
                 TextButton(onClick = { selectedTrackForPlaylist = null }) {
                     Text(
-                        text = if (isSpanish) "Cerrar" else "Close",
+                        text = Translations.get(settings.appLanguage, "close"),
                         color = GlassTextMuted,
                         fontSize = 14.sp
                     )

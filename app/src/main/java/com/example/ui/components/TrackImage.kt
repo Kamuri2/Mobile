@@ -90,7 +90,11 @@ fun PlayerAlbumArt(
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            FallbackMusicIcon(modifier = Modifier.fillMaxSize())
+            FallbackOrExtractImage(
+                track = track,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale
+            )
         }
     }
 }
@@ -198,11 +202,19 @@ fun TrackImage(
             contentScale = contentScale,
             modifier = modifier,
             error = {
-                FallbackMusicIcon(modifier = Modifier.fillMaxSize())
+                FallbackOrExtractImage(
+                    track = track,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = contentScale
+                )
             }
         )
     } else {
-        FallbackMusicIcon(modifier = modifier)
+        FallbackOrExtractImage(
+            track = track,
+            modifier = modifier,
+            contentScale = contentScale
+        )
     }
 }
 

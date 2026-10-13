@@ -18,6 +18,7 @@ import com.example.model.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,19 +67,33 @@ class AudioPlayerManager private constructor(private val context: Context) {
 
     private var progressJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var lyricsJob: Job? = null
+    private var enrichJob: Job? = null
+    private var pipelineJob: Job? = null
+
+    // Flujos de información de artista cargados secuencialmente en la Etapa 3
+    private val _currentArtistInfo = MutableStateFlow<com.example.data.ArtistInfo?>(null)
+    val currentArtistInfo: StateFlow<com.example.data.ArtistInfo?> = _currentArtistInfo.asStateFlow()
+
+    private val _currentArtistProfiles = MutableStateFlow<List<com.example.data.ArtistProfile>>(emptyList())
+    val currentArtistProfiles: StateFlow<List<com.example.data.ArtistProfile>> = _currentArtistProfiles.asStateFlow()
+
+    private val _isArtistInfoLoading = MutableStateFlow<Boolean>(false)
+    val isArtistInfoLoading: StateFlow<Boolean> = _isArtistInfoLoading.asStateFlow()
 
     private val crossfadeEngine by lazy {
         CrossfadeEngine(
             context = context,
-            fadeOutDurationMs = (_appSettings.value.fadeOutDuration * 1000L).toLong().coerceAtLeast(50L),
-            fadeInDurationMs = (_appSettings.value.fadeInDuration * 1000L).toLong().coerceAtLeast(50L),
-            crossfadeDurationMs = (_appSettings.value.crossfadeDuration * 1000L).toLong().coerceAtLeast(50L)
+            fadeOutDurationMs = 100L,
+            fadeInDurationMs = 100L,
+            crossfadeDurationMs = 100L
         )
     }
 
     // Track Queue State
     private val _playlist = MutableStateFlow<List<Track>>(emptyList())
     val playlist: StateFlow<List<Track>> = _playlist.asStateFlow()
+    private var originalQueue: List<Track>? = null
 
     private val _currentIndex = MutableStateFlow(-1)
     val currentIndex: StateFlow<Int> = _currentIndex.asStateFlow()
@@ -125,28 +140,68 @@ class AudioPlayerManager private constructor(private val context: Context) {
     val dislikedTracks: StateFlow<Set<Long>> = _dislikedTracks.asStateFlow()
 
     // Playlists State
-    private val _playlistsMap = MutableStateFlow<Map<String, List<Track>>>(
-        mapOf("Relax" to emptyList(), "Entrenamiento" to emptyList())
-    )
+    private val _playlistsMap = MutableStateFlow<Map<String, List<Track>>>(emptyMap())
     val playlistsMap: StateFlow<Map<String, List<Track>>> = _playlistsMap.asStateFlow()
 
     init {
+        try {
+            val initialLangCode = com.example.ui.LanguageManager.getLanguageCode(_appSettings.value.appLanguage)
+            com.example.ui.LanguageManager.cambiarIdioma(initialLangCode)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error applying initial language: ${e.message}")
+        }
         scope.launch {
             val lastTrackId = prefs.getLong("last_track_id", -1L)
             if (lastTrackId != -1L) {
                 try {
                     val tracks = com.example.data.TrackRepository.tracks.first { it.isNotEmpty() }
                     if (_currentTrack.value == null) {
-                        val lastTrack = tracks.find { it.id == lastTrackId }
+                        val lastTrack = tracks.find { it.id == lastTrackId } ?: tracks.firstOrNull()
                         if (lastTrack != null) {
-                            _playlist.value = listOf(lastTrack)
-                            _currentIndex.value = 0
+                            _playlist.value = tracks
+                            _currentIndex.value = tracks.indexOf(lastTrack).coerceAtLeast(0)
                             _currentTrack.value = lastTrack
                             _durationMs.value = lastTrack.durationMs
                         }
                     }
                 } catch (e: Exception) {}
             }
+        }
+    }
+
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+    private val audioFocusChangeListener = android.media.AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            android.media.AudioManager.AUDIOFOCUS_LOSS,
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                if (_isPlaying.value) {
+                    togglePlayPause()
+                }
+            }
+            android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                activePlayerInstance?.volume = _volume.value * 0.2f
+            }
+            android.media.AudioManager.AUDIOFOCUS_GAIN -> {
+                activePlayerInstance?.volume = _volume.value
+            }
+        }
+    }
+
+    private fun requestAppAudioFocus(): Boolean {
+        val am = audioManager ?: return true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val attr = android.media.AudioAttributes.Builder()
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .build()
+            val request = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attr)
+                .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                .build()
+            am.requestAudioFocus(request) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        } else {
+            @Suppress("DEPRECATION")
+            am.requestAudioFocus(audioFocusChangeListener, android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.AUDIOFOCUS_GAIN) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
     }
 
@@ -167,7 +222,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
             .build()
 
         return ExoPlayer.Builder(context)
-            .setAudioAttributes(audioAttributes, true)
+            .setAudioAttributes(audioAttributes, false)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setLoadControl(loadControl)
@@ -264,10 +319,8 @@ class AudioPlayerManager private constructor(private val context: Context) {
                     }
                 }
 
-                // Room SQLite: query saved lyrics (<1ms) or extract from tag and persist
-                loadLyricsForTrack(track)
-
-                enrichTrackIfNeeded(track, currentIdx)
+                // Iniciar pipeline secuencial (1. Portada y canción, 2. Letras, 3. Tarjeta de artista)
+                startTrackSequentialPipeline(track, currentIdx)
             }
         }
 
@@ -328,6 +381,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
     fun setQueue(tracks: List<Track>, startTrackIndex: Int = 0, autoPlay: Boolean = true) {
         crossfadeEngine.cancelCrossfade()
         _isShuffle.value = false
+        originalQueue = tracks
         if (tracks.isEmpty()) {
             _playlist.value = emptyList()
             exoPlayer?.stop()
@@ -343,35 +397,30 @@ class AudioPlayerManager private constructor(private val context: Context) {
 
         val player = getOrCreatePlayer()
 
-        val isSameList = _playlist.value.size == tracks.size &&
-                _playlist.value.indices.all { _playlist.value[it].id == tracks[it].id }
-
         _playlist.value = tracks
         _currentIndex.value = validIndex
         _currentTrack.value = track
         saveLastTrackId(track.id)
         loadLyricsForTrack(track)
 
-        if (isSameList && player.mediaItemCount == tracks.size) {
-            player.seekToDefaultPosition(validIndex)
-            if (autoPlay) {
-                player.play()
-                ensureServiceStarted()
-            }
-            return
-        }
-
-        player.shuffleModeEnabled = false
-        val mediaItems = tracks.map { trackToMediaItem(it) }
-        player.setMediaItems(mediaItems, validIndex, 0L)
+        val mediaItem = trackToMediaItem(track)
+        player.stop()
+        player.clearMediaItems()
+        player.setMediaItem(mediaItem)
         player.prepare()
 
         if (autoPlay) {
+            player.volume = _volume.value
+            player.playWhenReady = true
+            requestAppAudioFocus()
             player.play()
+            _isPlaying.value = true
             ensureServiceStarted()
         } else {
             player.pause()
+            _isPlaying.value = false
         }
+        enrichTrackIfNeeded(track, validIndex)
     }
 
     fun playTrack(track: Track) {
@@ -391,7 +440,8 @@ class AudioPlayerManager private constructor(private val context: Context) {
         val tracks = _playlist.value
         if (index !in tracks.indices) return
 
-        val durationMs = customDurationMs ?: (_appSettings.value.crossfadeDuration * 1000L).toLong().coerceAtLeast(100L)
+        requestAppAudioFocus()
+        val durationMs = customDurationMs ?: 100L
         val currentActive = getOrCreateActivePlayer()
         val nextPlayer = if (currentActive == playerA) playerB!! else playerA!!
 
@@ -430,97 +480,316 @@ class AudioPlayerManager private constructor(private val context: Context) {
         )
     }
 
+    private var lastTrackChangeTimeMs: Long = 0L
+
     fun playTrackAtIndex(index: Int) {
         val tracks = _playlist.value
         if (index !in tracks.indices) return
         val track = tracks[index]
 
-        val crossfadeMs = (_appSettings.value.crossfadeDuration * 1000L).toLong()
-        if (_isPlaying.value && activePlayerInstance?.isPlaying == true && crossfadeMs >= 50L && index != _currentIndex.value) {
-            crossfadeToTrack(index, track, crossfadeMs)
+        // 1. Cancel any active crossfade or gapless preload
+        crossfadeEngine.cancelCrossfade()
+
+        // 2. Stop and clear the inactive player to prevent any conflicting or old playback
+        val player = getOrCreateActivePlayer()
+        val otherPlayer = if (player == playerA) playerB else playerA
+        try {
+            otherPlayer?.volume = 0f
+            otherPlayer?.stop()
+            otherPlayer?.clearMediaItems()
+        } catch (_: Exception) {}
+
+        // Ensure activePlayerInstance and crossfade engine are synced to this player
+        activePlayerInstance = player
+        crossfadeEngine.attachActivePlayer(player, _volume.value)
+
+        // 3. Immediately set and load the new audio on the player in proper order:
+        // setMediaItem -> prepare -> play
+        val mediaItem = trackToMediaItem(track)
+        player.stop()
+        player.clearMediaItems()
+        player.setMediaItem(mediaItem)
+        player.prepare()
+        player.volume = _volume.value
+        player.playWhenReady = true
+        requestAppAudioFocus()
+        player.play()
+
+        // 4. Update the current index and track state (UI and metadata sync)
+        _currentIndex.value = index
+        _currentTrack.value = track
+        _currentPositionMs.value = 0L
+        _durationMs.value = track.durationMs
+        _isPlaying.value = true
+        saveLastTrackId(track.id)
+
+        scope.launch {
+            socialRepository.recordPlayback(track.id)
+        }
+        ensureServiceStarted()
+        startTrackSequentialPipeline(track, index)
+
+        val fadeInMs = (_appSettings.value.fadeInDuration * 1000L).toLong()
+        if (fadeInMs > 80L) {
+            crossfadeEngine.startFadeIn(player, fadeInMs)
         } else {
-            crossfadeEngine.cancelCrossfade()
-            val player = getOrCreateActivePlayer()
-            _currentIndex.value = index
-            _currentTrack.value = track
-            saveLastTrackId(track.id)
-
-            scope.launch {
-                socialRepository.recordPlayback(track.id)
-            }
-            loadLyricsForTrack(track)
-
-            val mediaItem = trackToMediaItem(track)
-            player.stop()
-            player.clearMediaItems()
-            player.setMediaItem(mediaItem)
-            player.prepare()
             player.volume = _volume.value
-            player.playWhenReady = true
-            player.play()
-            _isPlaying.value = true
-            ensureServiceStarted()
-            enrichTrackIfNeeded(track, index)
-
-            val fadeInMs = (_appSettings.value.fadeInDuration * 1000L).toLong()
-            if (fadeInMs > 0L) {
-                crossfadeEngine.startFadeIn(player, fadeInMs)
-            }
         }
     }
 
-    fun loadLyricsForTrack(track: Track) {
-        scope.launch(Dispatchers.IO) {
+    /**
+     * Pipeline secuencial de carga de recursos para evitar saturación de RAM:
+     * 1. Lo esencial: la portada y la canción (audio arrancado + carátula lista en disco + bitrate ligero).
+     *    Se liberan los buffers temporales de la etapa 1.
+     * 2. Las letras: lectura de etiquetas/LRC de forma aislada, sin competir con carátula ni red.
+     *    Se liberan los recursos de parsing de la etapa 2.
+     * 3. La tarjeta de los artistas: info, bio y fotos de perfiles cargados paso a paso para el tarjetero.
+     */
+    private fun startTrackSequentialPipeline(track: Track, index: Int) {
+        pipelineJob?.cancel()
+        lyricsJob?.cancel()
+        enrichJob?.cancel()
+
+        // Sembrar caché inmediato en memoria si ya existía de antes (0ms, 0 RAM adicional)
+        val initialCachedInfo = com.example.data.ArtistInfoFetcher.getCachedArtistInfo(track.artist)
+        _currentArtistInfo.value = initialCachedInfo
+        val initialCachedProfiles = com.example.data.ArtistInfoFetcher.getCachedArtistsForTrack(track)
+        _currentArtistProfiles.value = if (initialCachedProfiles.isNotEmpty()) initialCachedProfiles else {
+            if (initialCachedInfo != null) listOf(com.example.data.ArtistProfile(name = track.artist, isPrimary = true, info = initialCachedInfo))
+            else emptyList()
+        }
+
+        // Si los perfiles y fotos ya están completos en disco, no mostramos skeleton
+        val isFullyCached = initialCachedProfiles.isNotEmpty() && initialCachedProfiles.all {
+            !it.info.imageUrl.isNullOrBlank() && !it.info.bio.isNullOrBlank()
+        }
+        _isArtistInfoLoading.value = !isFullyCached
+
+        pipelineJob = scope.launch(Dispatchers.IO) {
+            // =========================================================================
+            // ETAPA 1: LO ESENCIAL (LA CANCIÓN Y LA PORTADA)
+            // =========================================================================
+            // La canción ya arrancó en el reproductor. Aseguramos la carátula en disco para
+            // que TrackImage/Coil la pinte de inmediato con máxima prioridad sin contención de I/O.
             try {
-                val lyrics = com.example.data.LyricsRepository.getInstance(context).getLyrics(context, track)
-                if (!lyrics.isNullOrBlank()) {
+                val artExtractor = com.example.data.AlbumArtExtractor(context)
+                if (artExtractor.getExistingArtFile(track) == null) {
+                    artExtractor.getHighResArt(track)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.d(TAG, "Etapa 1 carátula: ${e.message}")
+            }
+
+            // Enriquecer bitrate/sampleRate de forma ligera sin abrir árboles pesados ni extraer letras
+            if (track.bitrate.isBlank() || track.sampleRate.isBlank()) {
+                try {
+                    val (br, sr) = com.example.data.MetadataReader.extractAudioSpecsLightweight(context, track)
+                    if (isActive && (br.isNotBlank() || sr.isNotBlank())) {
+                        withContext(Dispatchers.Main) {
+                            val cur = _currentTrack.value
+                            if (cur != null && cur.id == track.id) {
+                                _currentTrack.value = cur.copy(
+                                    bitrate = if (cur.bitrate.isBlank()) br else cur.bitrate,
+                                    sampleRate = if (cur.sampleRate.isBlank()) sr else cur.sampleRate
+                                )
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                }
+            }
+
+            // Liberar recursos temporales de la etapa 1 antes de dar paso a las letras
+            if (!isActive) return@launch
+            delay(120)
+            if (!isActive) return@launch
+
+            // =========================================================================
+            // ETAPA 2: LAS LETRAS
+            // =========================================================================
+            // Se leen las letras sin interferencia de la carátula ni de descargas del artista.
+            try {
+                val repo = com.example.data.LyricsRepository.getInstance(context)
+                val immediate = repo.getCachedOrDisk(track)
+                val finalLyrics = if (!immediate.isNullOrBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(immediate)) {
+                    immediate
+                } else {
+                    repo.getLyrics(context, track, forceRescan = false)
+                }
+
+                if (!finalLyrics.isNullOrBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(finalLyrics) && isActive) {
+                    val cleanLyrics = com.example.data.AudioLyricsExtractor.cleanExtractedLyrics(finalLyrics)
+                    if (cleanLyrics.isNotBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(cleanLyrics)) {
+                        withContext(Dispatchers.Main) {
+                            val cur = _currentTrack.value
+                            if (cur != null && cur.id == track.id) {
+                                _currentTrack.value = cur.copy(lyrics = cleanLyrics)
+                            }
+                            val currentPlaylist = _playlist.value.toMutableList()
+                            val idx = currentPlaylist.indexOfFirst { it.id == track.id }
+                            if (idx != -1) {
+                                currentPlaylist[idx] = currentPlaylist[idx].copy(lyrics = cleanLyrics)
+                                _playlist.value = currentPlaylist
+                            }
+                        }
+                        try {
+                            com.example.data.TrackRepository.updateTrackLyrics(context, track.id, cleanLyrics)
+                        } catch (_: Exception) {}
+                    }
+                } else if (isActive) {
                     withContext(Dispatchers.Main) {
                         val cur = _currentTrack.value
-                        if (cur != null && cur.id == track.id) {
-                            _currentTrack.value = cur.copy(lyrics = lyrics)
-                        }
-                        val currentPlaylist = _playlist.value.toMutableList()
-                        val idx = currentPlaylist.indexOfFirst { it.id == track.id }
-                        if (idx != -1) {
-                            currentPlaylist[idx] = currentPlaylist[idx].copy(lyrics = lyrics)
-                            _playlist.value = currentPlaylist
+                        if (cur != null && cur.id == track.id && (cur.lyrics.isBlank() || com.example.data.AudioLyricsExtractor.isCorruptedLyrics(cur.lyrics))) {
+                            _currentTrack.value = cur.copy(lyrics = "")
                         }
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading lyrics for track ${track.title}: ${e.message}")
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.d(TAG, "Etapa 2 letras: ${e.message}")
+            }
+
+            // Liberar memoria intermedia y descriptores de etiquetas de la etapa 2
+            if (!isActive) return@launch
+            delay(180)
+            if (!isActive) return@launch
+
+            // =========================================================================
+            // ETAPA 3: LA TARJETA DE LOS ARTISTAS
+            // =========================================================================
+            // Ahora que la canción suena, la portada está en pantalla y las letras se leyeron,
+            // procedemos a cargar la tarjeta de los artistas paso a paso sin ahogar la memoria.
+            try {
+                val cached = com.example.data.ArtistInfoFetcher.getCachedArtistInfo(track.artist)
+                val needFetchInfo = cached == null || cached.imageUrl.isNullOrBlank() || cached.bio.isNullOrBlank()
+                val fetchedInfo = if (needFetchInfo) {
+                    com.example.data.ArtistInfoFetcher.fetchArtistInfo(
+                        rawArtistName = track.artist,
+                        trackTitle = track.title,
+                        albumName = track.album,
+                        genre = track.genre
+                    )
+                } else {
+                    cached
+                }
+
+                if (isActive && fetchedInfo != null) {
+                    _currentArtistInfo.value = fetchedInfo
+                }
+
+                // Cargar perfiles enriquecidos para el tarjetero
+                if (isActive) {
+                    val fetchedProfiles = com.example.data.ArtistInfoFetcher.fetchArtistsForTrack(track)
+                    if (isActive && fetchedProfiles.isNotEmpty()) {
+                        _currentArtistProfiles.value = fetchedProfiles
+                    } else if (fetchedInfo != null) {
+                        _currentArtistProfiles.value = listOf(
+                            com.example.data.ArtistProfile(name = track.artist, isPrimary = true, info = fetchedInfo)
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.d(TAG, "Etapa 3 tarjeta de artista: ${e.message}")
+            } finally {
+                _isArtistInfoLoading.value = false
+            }
+        }
+    }
+
+    fun refreshCurrentArtistInfo() {
+        val track = _currentTrack.value ?: return
+        _currentArtistInfo.value = null
+        _currentArtistProfiles.value = emptyList()
+        _isArtistInfoLoading.value = true
+        enrichJob?.cancel()
+        enrichJob = scope.launch(Dispatchers.IO) {
+            try {
+                val fetchedInfo = com.example.data.ArtistInfoFetcher.fetchArtistInfo(
+                    rawArtistName = track.artist,
+                    trackTitle = track.title,
+                    albumName = track.album,
+                    genre = track.genre
+                )
+                if (isActive && fetchedInfo != null) {
+                    _currentArtistInfo.value = fetchedInfo
+                }
+                val fetchedProfiles = com.example.data.ArtistInfoFetcher.fetchArtistsForTrack(track)
+                if (isActive && fetchedProfiles.isNotEmpty()) {
+                    _currentArtistProfiles.value = fetchedProfiles
+                } else if (isActive && fetchedInfo != null) {
+                    _currentArtistProfiles.value = listOf(
+                        com.example.data.ArtistProfile(name = track.artist, isPrimary = true, info = fetchedInfo)
+                    )
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.d(TAG, "Error refreshing artist info: ${e.message}")
+            } finally {
+                _isArtistInfoLoading.value = false
+            }
+        }
+    }
+
+    fun loadLyricsForTrack(track: Track, forceRescan: Boolean = false) {
+        lyricsJob?.cancel()
+        lyricsJob = scope.launch(Dispatchers.IO) {
+            try {
+                val repo = com.example.data.LyricsRepository.getInstance(context)
+                val immediate = if (!forceRescan) repo.getCachedOrDisk(track) else null
+                if (!immediate.isNullOrBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(immediate)) {
+                    val cleanImmediate = com.example.data.AudioLyricsExtractor.cleanExtractedLyrics(immediate)
+                    if (cleanImmediate.isNotBlank()) {
+                        withContext(Dispatchers.Main) {
+                            val cur = _currentTrack.value
+                            if (cur != null && cur.id == track.id) {
+                                _currentTrack.value = cur.copy(lyrics = cleanImmediate)
+                            }
+                        }
+                        return@launch
+                    }
+                }
+
+                val lyrics = repo.getLyrics(context, track, forceRescan)
+                if (!lyrics.isNullOrBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(lyrics) && isActive) {
+                    val cleanLyrics = com.example.data.AudioLyricsExtractor.cleanExtractedLyrics(lyrics)
+                    if (cleanLyrics.isNotBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(cleanLyrics)) {
+                        withContext(Dispatchers.Main) {
+                            val cur = _currentTrack.value
+                            if (cur != null && cur.id == track.id) {
+                                _currentTrack.value = cur.copy(lyrics = cleanLyrics)
+                            }
+                            val currentPlaylist = _playlist.value.toMutableList()
+                            val idx = currentPlaylist.indexOfFirst { it.id == track.id }
+                            if (idx != -1) {
+                                currentPlaylist[idx] = currentPlaylist[idx].copy(lyrics = cleanLyrics)
+                                _playlist.value = currentPlaylist
+                            }
+                        }
+                        try {
+                            com.example.data.TrackRepository.updateTrackLyrics(context, track.id, cleanLyrics)
+                        } catch (_: Exception) {}
+                    }
+                } else if (isActive) {
+                    withContext(Dispatchers.Main) {
+                        val cur = _currentTrack.value
+                        if (cur != null && cur.id == track.id && (cur.lyrics.isBlank() || com.example.data.AudioLyricsExtractor.isCorruptedLyrics(cur.lyrics))) {
+                            _currentTrack.value = cur.copy(lyrics = "")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "Error loading lyrics for track ${track.title}: ${e.message}")
+                }
             }
         }
     }
 
     private fun enrichTrackIfNeeded(track: Track, index: Int) {
-        if (track.bitrate.isBlank() || track.sampleRate.isBlank()) {
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val enriched = com.example.data.MetadataReader.extractFullMetadata(context, track)
-                    withContext(Dispatchers.Main) {
-                        val cur = _currentTrack.value
-                        if (cur != null && cur.id == track.id) {
-                            _currentTrack.value = cur.copy(
-                                bitrate = if (cur.bitrate.isBlank()) enriched.bitrate else cur.bitrate,
-                                sampleRate = if (cur.sampleRate.isBlank()) enriched.sampleRate else cur.sampleRate
-                            )
-                        }
-                        val currentPlaylist = _playlist.value.toMutableList()
-                        val idx = currentPlaylist.indexOfFirst { it.id == track.id }
-                        if (idx != -1) {
-                            currentPlaylist[idx] = currentPlaylist[idx].copy(
-                                bitrate = if (currentPlaylist[idx].bitrate.isBlank()) enriched.bitrate else currentPlaylist[idx].bitrate,
-                                sampleRate = if (currentPlaylist[idx].sampleRate.isBlank()) enriched.sampleRate else currentPlaylist[idx].sampleRate
-                            )
-                            _playlist.value = currentPlaylist
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "enrichTrackIfNeeded skipped: ${e.message}")
-                }
-            }
-        }
+        startTrackSequentialPipeline(track, index)
     }
 
     fun togglePlayPause() {
@@ -535,6 +804,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
             crossfadeEngine.cancelCrossfade()
             player.pause()
         } else {
+            requestAppAudioFocus()
             player.play()
             ensureServiceStarted()
         }
@@ -546,23 +816,12 @@ class AudioPlayerManager private constructor(private val context: Context) {
 
         val curIdx = _currentIndex.value
         val nextIdx = when {
-            _isShuffle.value -> {
-                if (tracks.size > 1) {
-                    tracks.indices.filter { it != curIdx }.random()
-                } else {
-                    0
-                }
-            }
+            _loopMode.value == LoopMode.REPEAT_ONE -> curIdx
             curIdx < tracks.lastIndex -> curIdx + 1
             _loopMode.value == LoopMode.REPEAT_ALL -> 0
-            else -> return
+            else -> 0
         }
-        val crossfadeMs = (_appSettings.value.crossfadeDuration * 1000L).toLong()
-        if (_isPlaying.value && activePlayerInstance?.isPlaying == true && crossfadeMs >= 50L) {
-            crossfadeToTrack(nextIdx, tracks[nextIdx], crossfadeMs)
-        } else {
-            playTrackAtIndex(nextIdx)
-        }
+        playTrackAtIndex(nextIdx)
     }
 
     fun previousTrack() {
@@ -579,23 +838,11 @@ class AudioPlayerManager private constructor(private val context: Context) {
 
         val curIdx = _currentIndex.value
         val prevIdx = when {
-            _isShuffle.value -> {
-                if (tracks.size > 1) {
-                    tracks.indices.filter { it != curIdx }.random()
-                } else {
-                    0
-                }
-            }
             curIdx > 0 -> curIdx - 1
             _loopMode.value == LoopMode.REPEAT_ALL -> tracks.lastIndex
             else -> 0
         }
-        val crossfadeMs = (_appSettings.value.crossfadeDuration * 1000L).toLong()
-        if (_isPlaying.value && activePlayerInstance?.isPlaying == true && crossfadeMs >= 50L) {
-            crossfadeToTrack(prevIdx, tracks[prevIdx], crossfadeMs)
-        } else {
-            playTrackAtIndex(prevIdx)
-        }
+        playTrackAtIndex(prevIdx)
     }
 
     fun seekTo(positionMs: Long) {
@@ -622,15 +869,49 @@ class AudioPlayerManager private constructor(private val context: Context) {
     }
 
     fun setShuffle(enabled: Boolean) {
-        if (_isShuffle.value != enabled) {
-            toggleShuffle()
+        if (_isShuffle.value == enabled) return
+        _isShuffle.value = enabled
+        playerA?.shuffleModeEnabled = enabled
+        playerB?.shuffleModeEnabled = enabled
+
+        val cur = _currentTrack.value
+        val tracks = _playlist.value
+        if (enabled) {
+            if (originalQueue == null || originalQueue!!.isEmpty()) {
+                originalQueue = tracks
+            }
+            if (tracks.size > 1) {
+                val otherTracks = tracks.filter { it.id != cur?.id }.shuffled()
+                val newQueue = if (cur != null) listOf(cur) + otherTracks else tracks.shuffled()
+                _playlist.value = newQueue
+                _currentIndex.value = 0
+            }
+        } else {
+            val orig = originalQueue
+            if (orig != null && orig.isNotEmpty()) {
+                _playlist.value = orig
+                _currentIndex.value = orig.indexOfFirst { it.id == cur?.id }.coerceAtLeast(0)
+            }
+            originalQueue = null
         }
     }
 
     fun toggleShuffle() {
-        _isShuffle.value = !_isShuffle.value
-        playerA?.shuffleModeEnabled = _isShuffle.value
-        playerB?.shuffleModeEnabled = _isShuffle.value
+        setShuffle(!_isShuffle.value)
+    }
+
+    fun shuffleQueue() {
+        val cur = _currentTrack.value
+        val tracks = _playlist.value
+        if (tracks.size <= 1) return
+        if (originalQueue == null || originalQueue!!.isEmpty()) {
+            originalQueue = tracks
+        }
+        val otherTracks = tracks.filter { it.id != cur?.id }.shuffled()
+        val newQueue = if (cur != null) listOf(cur) + otherTracks else tracks.shuffled()
+        _playlist.value = newQueue
+        _currentIndex.value = 0
+        _isShuffle.value = true
     }
 
     fun cycleLoopMode() {
@@ -645,11 +926,11 @@ class AudioPlayerManager private constructor(private val context: Context) {
     }
 
     private fun updatePlayerRepeatMode(player: ExoPlayer) {
-        player.repeatMode = when (_loopMode.value) {
-            LoopMode.OFF -> Player.REPEAT_MODE_OFF
-            LoopMode.REPEAT_ALL -> Player.REPEAT_MODE_ALL
-            LoopMode.REPEAT_ONE -> Player.REPEAT_MODE_ONE
-        }
+        // Individual player instances must NEVER repeat their single track automatically!
+        // AudioPlayerManager manages playlist looping in getNextTrackInfo() and nextTrack().
+        // If an ExoPlayer instance had REPEAT_MODE_ALL, it looped its 1-song playlist back to 0
+        // right before crossfade finished, causing the 1-second replay pop reported by the user!
+        player.repeatMode = Player.REPEAT_MODE_OFF
     }
 
     fun toggleFavorite(trackId: Long) {
@@ -682,14 +963,13 @@ class AudioPlayerManager private constructor(private val context: Context) {
     }
 
     private fun handleTrackCompletion() {
-        if (!crossfadeEngine.isCrossfading && !crossfadeEngine.isPreloading) {
-            val next = getNextTrackInfo()
-            if (next != null) {
-                playTrackAtIndex(next.first)
-            } else {
-                _isPlaying.value = false
-                stopProgressTracker()
-            }
+        crossfadeEngine.cancelCrossfade()
+        val next = getNextTrackInfo()
+        if (next != null) {
+            playTrackAtIndex(next.first)
+        } else {
+            _isPlaying.value = false
+            stopProgressTracker()
         }
     }
 
@@ -701,12 +981,6 @@ class AudioPlayerManager private constructor(private val context: Context) {
         return when {
             _loopMode.value == LoopMode.REPEAT_ONE -> {
                 if (curIdx in tracks.indices) curIdx to tracks[curIdx] else null
-            }
-            _isShuffle.value -> {
-                if (tracks.size > 1) {
-                    val nextIdx = tracks.indices.filter { it != curIdx }.random()
-                    nextIdx to tracks[nextIdx]
-                } else null
             }
             curIdx + 1 < tracks.size -> {
                 (curIdx + 1) to tracks[curIdx + 1]
@@ -733,15 +1007,16 @@ class AudioPlayerManager private constructor(private val context: Context) {
                     }
 
                     // Combined Gapless Crossfade at end of song:
-                    // Preload next track silently, wait for STATE_READY, then crossfade in 100ms
-                    val crossfadeMs = (_appSettings.value.crossfadeDuration * 1000L).toLong()
-                    if (dur > 0L && crossfadeMs >= 50L && dur > crossfadeMs * 2) {
+                    // Preload next track silently, wait for STATE_READY, then crossfade smoothly
+                    val autoCrossfadeMs = maxOf(crossfadeEngine.crossfadeDurationMs, 600L)
+                    val preloadThreshold = autoCrossfadeMs + 3400L
+
+                    if (dur > 0L && dur > 1200L) {
                         val remaining = dur - pos
-                        if (remaining in 0..1500L) {
+                        if (remaining in 0..(preloadThreshold + 600L)) {
                             isNearEnd = true
                         }
 
-                        val preloadThreshold = crossfadeMs + 250L
                         if (remaining in 1..preloadThreshold && !crossfadeEngine.isCrossfading && !crossfadeEngine.isPreloading) {
                             val next = getNextTrackInfo()
                             if (next != null) {
@@ -757,7 +1032,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
                                 crossfadeEngine.initiateGaplessCrossfade(
                                     outgoingPlayer = player,
                                     incomingPlayer = nextPlayer,
-                                    durationMs = crossfadeMs,
+                                    durationMs = autoCrossfadeMs,
                                     volume = _volume.value,
                                     onSyncMoment = {
                                         activePlayerInstance = nextPlayer
@@ -768,7 +1043,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
                                         _isPlaying.value = true
                                         saveLastTrackId(next.second.id)
 
-                                        scope.launch {
+                                        scope.launch(Dispatchers.IO) {
                                             socialRepository.recordPlayback(next.second.id)
                                         }
                                         loadLyricsForTrack(next.second)
@@ -778,12 +1053,12 @@ class AudioPlayerManager private constructor(private val context: Context) {
                                     onComplete = {}
                                 )
                             } else {
-                                crossfadeEngine.applyFadeOut(remaining, crossfadeMs, player)
+                                crossfadeEngine.applyFadeOut(remaining, autoCrossfadeMs, player)
                             }
                         }
                     }
                 }
-                delay(if (isNearEnd) 10L else 40L)
+                delay(if (isNearEnd) 30L else 200L)
             }
         }
     }
@@ -796,21 +1071,39 @@ class AudioPlayerManager private constructor(private val context: Context) {
     fun removeFromQueue(index: Int) {
         val currentList = _playlist.value.toMutableList()
         if (index in currentList.indices) {
+            crossfadeEngine.cancelCrossfade()
+            val inactivePlayer = if (activePlayerInstance == playerA) playerB else playerA
+            inactivePlayer?.volume = 0f
+            try {
+                inactivePlayer?.stop()
+                inactivePlayer?.clearMediaItems()
+            } catch (_: Exception) {}
+
+            val removedTrack = currentList[index]
             val isCurrentBeingRemoved = index == _currentIndex.value
             currentList.removeAt(index)
             _playlist.value = currentList
-            exoPlayer?.removeMediaItem(index)
+            originalQueue = originalQueue?.filter { it.id != removedTrack.id }
+
             if (currentList.isEmpty()) {
                 _currentIndex.value = -1
                 _currentTrack.value = null
                 _isPlaying.value = false
-                exoPlayer?.stop()
-                exoPlayer?.clearMediaItems()
+                playerA?.stop()
+                playerA?.clearMediaItems()
+                playerB?.stop()
+                playerB?.clearMediaItems()
             } else if (isCurrentBeingRemoved) {
                 val nextIdx = index.coerceAtMost(currentList.lastIndex)
                 playTrackAtIndex(nextIdx)
-            } else if (index < _currentIndex.value) {
-                _currentIndex.value = _currentIndex.value - 1
+            } else {
+                val currentTrackId = _currentTrack.value?.id
+                val actualCurrIdx = if (currentTrackId != null) {
+                    currentList.indexOfFirst { it.id == currentTrackId }.takeIf { it != -1 } ?: 0
+                } else {
+                    _currentIndex.value.coerceIn(0, currentList.lastIndex)
+                }
+                _currentIndex.value = actualCurrIdx
             }
         }
     }
@@ -818,37 +1111,73 @@ class AudioPlayerManager private constructor(private val context: Context) {
     fun moveInQueue(fromIndex: Int, toIndex: Int) {
         val currentList = _playlist.value.toMutableList()
         if (fromIndex in currentList.indices && toIndex in currentList.indices && fromIndex != toIndex) {
-            val currIdx = _currentIndex.value
+            crossfadeEngine.cancelCrossfade()
+            val inactivePlayer = if (activePlayerInstance == playerA) playerB else playerA
+            inactivePlayer?.volume = 0f
+            try {
+                inactivePlayer?.stop()
+                inactivePlayer?.clearMediaItems()
+            } catch (_: Exception) {}
+
+            val currentTrackId = _currentTrack.value?.id
             val track = currentList.removeAt(fromIndex)
             currentList.add(toIndex, track)
             _playlist.value = currentList
-            try {
-                exoPlayer?.moveMediaItem(fromIndex, toIndex)
-            } catch (e: Exception) {}
 
-            // Keep tracking of current playing index correctly
-            if (currIdx == fromIndex) {
-                _currentIndex.value = toIndex
-            } else if (fromIndex < currIdx && toIndex >= currIdx) {
-                _currentIndex.value = currIdx - 1
-            } else if (fromIndex > currIdx && toIndex <= currIdx) {
-                _currentIndex.value = currIdx + 1
+            val actualCurrIdx = if (currentTrackId != null) {
+                currentList.indexOfFirst { it.id == currentTrackId }.takeIf { it != -1 } ?: _currentIndex.value
+            } else {
+                _currentIndex.value
             }
+            _currentIndex.value = actualCurrIdx
         }
     }
 
     fun setPlayNext(track: Track) {
+        // Cancel any active crossfade or preload immediately
+        crossfadeEngine.cancelCrossfade()
+
+        // Stop and clear inactive player to purge any stale preloaded track
+        val inactivePlayer = if (activePlayerInstance == playerA) playerB else playerA
+        inactivePlayer?.volume = 0f
+        try {
+            inactivePlayer?.stop()
+            inactivePlayer?.clearMediaItems()
+        } catch (_: Exception) {}
+
         val currentList = _playlist.value.toMutableList()
         val currIdx = _currentIndex.value
+        val currentTrackId = _currentTrack.value?.id
+
         val existingIdx = currentList.indexOfFirst { it.id == track.id }
         if (existingIdx != -1) {
+            // If already the currently playing track, do nothing
+            if (existingIdx == currIdx) return
             currentList.removeAt(existingIdx)
-            exoPlayer?.removeMediaItem(existingIdx)
         }
-        val insertPos = if (currIdx in currentList.indices) currIdx + 1 else currentList.size
+
+        // Accurately find current playing track's index in the modified list
+        val actualCurrIdx = if (currentTrackId != null) {
+            currentList.indexOfFirst { it.id == currentTrackId }.takeIf { it != -1 } ?: currIdx
+        } else {
+            currIdx
+        }
+
+        // Insert immediately after the current playing track (front of the upcoming queue)
+        val insertPos = if (actualCurrIdx in currentList.indices) actualCurrIdx + 1 else 0
         currentList.add(insertPos, track)
+
         _playlist.value = currentList
-        exoPlayer?.addMediaItem(insertPos, trackToMediaItem(track))
+        _currentIndex.value = actualCurrIdx
+
+        // Maintain originalQueue if shuffle was active
+        originalQueue = originalQueue?.let { orig ->
+            val origList = orig.filter { it.id != track.id }.toMutableList()
+            val origCurPos = origList.indexOfFirst { it.id == currentTrackId }
+            val origInsert = if (origCurPos != -1) origCurPos + 1 else origList.size
+            origList.add(origInsert, track)
+            origList
+        }
     }
 
     fun createPlaylist(name: String) {
@@ -912,9 +1241,15 @@ class AudioPlayerManager private constructor(private val context: Context) {
 
     private fun loadSettings(): AppSettings {
         return try {
+            val savedLang = prefs.getString("appLanguage", null)
+            val resolvedLang = if (savedLang != null && savedLang.isNotBlank()) {
+                savedLang
+            } else {
+                com.example.ui.LanguageManager.getDeviceDefaultLanguage(context)
+            }
             AppSettings(
                 isDarkMode = prefs.getBoolean("isDarkMode", true),
-                appLanguage = prefs.getString("appLanguage", "English") ?: "English",
+                appLanguage = resolvedLang,
                 selectedTheme = try { AppTheme.valueOf(prefs.getString("selectedTheme", "SUNSET") ?: "SUNSET") } catch(e: Exception) { AppTheme.SUNSET },
                 fontFamilyName = prefs.getString("fontFamilyName", "System Font (Default)") ?: "System Font (Default)",
                 lyricsFontSizePercent = prefs.getInt("lyricsFontSizePercent", 110),
@@ -950,11 +1285,16 @@ class AudioPlayerManager private constructor(private val context: Context) {
     }
 
     fun updateSettings(newSettings: AppSettings) {
+        val oldLang = _appSettings.value.appLanguage
         _appSettings.value = newSettings
         saveSettings(newSettings)
-        crossfadeEngine.crossfadeDurationMs = (newSettings.crossfadeDuration * 1000L).toLong().coerceAtLeast(50L)
-        crossfadeEngine.fadeOutDurationMs = (newSettings.fadeOutDuration * 1000L).toLong().coerceAtLeast(50L)
-        crossfadeEngine.fadeInDurationMs = (newSettings.fadeInDuration * 1000L).toLong().coerceAtLeast(50L)
+        crossfadeEngine.crossfadeDurationMs = 100L
+        crossfadeEngine.fadeOutDurationMs = 100L
+        crossfadeEngine.fadeInDurationMs = 100L
+        if (newSettings.appLanguage != oldLang) {
+            val code = com.example.ui.LanguageManager.getLanguageCode(newSettings.appLanguage)
+            com.example.ui.LanguageManager.cambiarIdioma(code)
+        }
     }
 
     fun updateTheme(theme: AppTheme) {
@@ -966,6 +1306,8 @@ class AudioPlayerManager private constructor(private val context: Context) {
     }
 
     fun setAppLanguage(lang: String) {
+        val code = com.example.ui.LanguageManager.getLanguageCode(lang)
+        com.example.ui.LanguageManager.cambiarIdioma(code)
         updateSettings(_appSettings.value.copy(appLanguage = lang))
     }
 

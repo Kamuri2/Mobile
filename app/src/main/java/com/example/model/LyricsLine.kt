@@ -13,67 +13,110 @@ data class LyricsLine(
 }
 
 object LyricsParser {
-    /**
-     * Parses LRC format string e.g. "[00:12.50]Line of lyrics text"
-     */
+    // Matches enclosed timestamps like [00:12.50], [00:12.500], [00:12:50], <00:12.50>, [0:12.50]
+    private val timestampRegex = Regex("""(?:\[|<)\s*(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\s*(?:\]|>)""")
+    // Matches enhanced syllable timestamps like <00:12.50>
+    private val syllableRegex = Regex("""<\s*\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\s*>""")
+    // Matches ANY bracketed metadata header tag e.g. [ar:Artist], [artist:Artist], [ti:Title], [length:03:45], [offset:0], [written by:...], etc.
+    private val metadataTagRegex = Regex("""\[\s*[a-zA-Z_ ]{1,24}\s*:[^\]]*\]""", RegexOption.IGNORE_CASE)
+    // Matches raw metadata key-value lines without brackets or with prefix
+    private val metadataLineRegex = Regex("""(?i)^\s*(?:ti|ar|al|by|offset|re|ve|length|id|au|hash|creator|program|version|kana|romaji|translation|artist|album|title|composer|lyricist|tool|encoding|source|written\s*by|synced\s*by|sync\s*by|lyrics\s*by|created\s*by|made\s*by|encoded\s*by|editor|url|qq|site|karaoke)\s*:.*""")
+    // Matches ripper, encoder, or advertising residue lines
+    private val residueLineRegex = Regex("""(?i)^\s*(?:Exact\s*Audio\s*Copy|LAME|Lavf|Encoded\s*by|Ripped\s*by|iTunNORM|iTunSMPB|Frame:\s*[A-Z0-9]{3,4}|[0-9a-f]{8}(?:\s+[0-9a-f]{8}){3,}|synced\s*by|lyrics\s*(?:provided\s*)?by|created\s*by|created\s*with|editor\s*:|qq\s*music|musixmatch|minilyrics|lrc\s*maker|lrc\s*generator|www\.[a-z0-9.-]+\.[a-z]{2,}|https?://|visit\s*our|all\s*rights\s*reserved|copyright\s*\(c\)|downloaded\s*from|translated\s*by|end\s*of\s*lyrics).*""")
+    private val offsetRegex = Regex("""\[offset:\s*([+-]?\d+)\s*\]""", RegexOption.IGNORE_CASE)
+
     fun parseLrc(lrcText: String): List<LyricsLine> {
         if (lrcText.isBlank()) return emptyList()
-        val lines = mutableListOf<LyricsLine>()
-        // Permissive regex for formats like [mm:ss], [m:ss.ms], <mm:ss.ms>, [mm:ss:ms]
-        val lrcRegex = Regex("(?:\\[|<)(\\d{1,3}):(\\d{1,2})(?:[.:](\\d{1,3}))?(?:\\]|>)(.*)")
-        
+        val parsedLines = mutableListOf<LyricsLine>()
+
+        var globalOffset = 0L
+        val offsetMatch = offsetRegex.find(lrcText)
+        if (offsetMatch != null) {
+            globalOffset = offsetMatch.groupValues[1].toLongOrNull() ?: 0L
+        }
+
         var hasAnyTimestamps = false
 
-        lrcText.lines().forEach { line ->
-            val cleanLine = line.trim()
-            val match = lrcRegex.find(cleanLine)
-            if (match != null) {
+        lrcText.lines().forEach { rawLine ->
+            val cleanLine = rawLine.trim()
+            if (cleanLine.isBlank()) return@forEach
+
+            // Skip lines that are purely metadata headers or ripper residues
+            if (cleanLine.matches(Regex("""^\[\s*[a-zA-Z_ ]{1,24}\s*:[^\]]*\]$""")) ||
+                metadataLineRegex.matches(cleanLine) ||
+                residueLineRegex.matches(cleanLine)) {
+                return@forEach
+            }
+
+            // Find all timestamps on this line (supports multiple timestamps e.g. [00:12.50][01:15.20]Chorus)
+            val timeMatches = timestampRegex.findAll(cleanLine).toList()
+
+            if (timeMatches.isNotEmpty()) {
                 hasAnyTimestamps = true
-                val minsStr = match.groupValues[1]
-                val secsStr = match.groupValues[2]
-                val msStr = match.groupValues[3]
-                val content = match.groupValues[4]
-                
-                val mins = minsStr.toLongOrNull() ?: 0L
-                val secs = secsStr.toLongOrNull() ?: 0L
-                val msFactor = if (msStr.length == 2) 10L else if (msStr.length == 1) 100L else 1L
-                val ms = if (msStr.isNotEmpty()) (msStr.toLongOrNull() ?: 0L) * msFactor else 0L
-                val timestamp = mins * 60_000L + secs * 1_000L + ms
-                
-                if (content.isNotBlank()) {
-                    lines.add(LyricsLine(timestamp, content.trim()))
+
+                // Strip all timestamp tags, enhanced syllable tags, and metadata tags to extract pure lyric text
+                var cleanText = cleanLine.replace(timestampRegex, "")
+                cleanText = cleanText.replace(syllableRegex, "")
+                cleanText = cleanText.replace(metadataTagRegex, "").trim()
+
+                // If after removing timestamps and metadata tags, the line is blank or is metadata residue, skip
+                if (cleanText.isBlank() || metadataLineRegex.matches(cleanText) || residueLineRegex.matches(cleanText)) {
+                    return@forEach
                 }
-            } else if (cleanLine.isNotBlank()) {
-                // Keep the text, but assign it a negative timestamp so it doesn't mess up playback
-                // if it's metadata. We will filter these out later if it's a synced file.
-                val content = if (cleanLine.startsWith("[") || cleanLine.startsWith("<")) {
-                    cleanLine.replace(Regex("(?:\\[|<).*?(?:\\]|>)"), "").trim()
-                } else {
-                    cleanLine
+
+                // Skip if this single line is a known corrupted token or advertising URL
+                if (cleanText.matches(Regex("""(?i)^https?://.*""")) || cleanText.matches(Regex("""(?i)^www\..*"""))) {
+                    return@forEach
                 }
-                if (content.isNotBlank()) {
-                    lines.add(LyricsLine(-1L, content))
+
+                for (match in timeMatches) {
+                    val mins = match.groupValues[1].toLongOrNull() ?: 0L
+                    val secs = match.groupValues[2].toLongOrNull() ?: 0L
+                    val fractionStr = match.groupValues.getOrNull(3) ?: ""
+                    val millis = when (fractionStr.length) {
+                        0 -> 0L
+                        1 -> (fractionStr.toLongOrNull() ?: 0L) * 100L
+                        2 -> (fractionStr.toLongOrNull() ?: 0L) * 10L
+                        3 -> fractionStr.toLongOrNull() ?: 0L
+                        else -> fractionStr.substring(0, 3).toLongOrNull() ?: 0L
+                    }
+                    val totalMs = (mins * 60_000L) + (secs * 1_000L) + millis + globalOffset
+                    val finalTimeMs = totalMs.coerceAtLeast(0L)
+
+                    parsedLines.add(LyricsLine(finalTimeMs, cleanText))
+                }
+            } else {
+                // If it's a section tag like [Chorus], [Verse 1] or raw text
+                var textWithoutTags = cleanLine.replace(metadataTagRegex, "").trim()
+                textWithoutTags = textWithoutTags.replace(Regex("""^\[\s*(.*?)\s*\]$"""), "$1").trim()
+                if (textWithoutTags.isNotBlank() &&
+                    !metadataLineRegex.matches(textWithoutTags) &&
+                    !residueLineRegex.matches(textWithoutTags) &&
+                    !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(textWithoutTags)) {
+                    parsedLines.add(LyricsLine(-1L, textWithoutTags))
                 }
             }
         }
-        
-        // If there were no valid timestamps at all, it's an unsynced lyrics file.
-        // Returning an empty list tells the UI to render the raw string as static text.
+
+        // If no timestamps were found at all, return emptyList so caller treats it as unsynced
         if (!hasAnyTimestamps) {
             return emptyList()
         }
 
-        // For synced lyrics, assign any unsynced interstitial lines to the previous timestamp
-        var lastTimestamp = 0L
-        val fixedLines = lines.map { 
-            if (it.timestampMs >= 0) {
-                lastTimestamp = it.timestampMs
-                it
-            } else {
-                it.copy(timestampMs = lastTimestamp)
+        // For synced lyrics, resolve any non-timestamped lines to the previous timestamp
+        var currentMs = 0L
+        val sortedLines = parsedLines
+            .map { line ->
+                if (line.timestampMs >= 0L) {
+                    currentMs = line.timestampMs
+                    line
+                } else {
+                    line.copy(timestampMs = currentMs)
+                }
             }
-        }
+            .filter { it.text.isNotBlank() }
+            .sortedBy { it.timestampMs }
 
-        return fixedLines.sortedBy { it.timestampMs }
+        return sortedLines
     }
 }

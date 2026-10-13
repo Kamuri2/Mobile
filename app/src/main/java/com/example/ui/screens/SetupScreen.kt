@@ -48,7 +48,7 @@ fun SetupScreen(
         uri?.let { imageUri = it }
     }
 
-    val availableLanguages = listOf("English", "Spanish", "French", "German", "Italian", "Portuguese", "Japanese")
+    val availableLanguages = listOf("System", "English", "Spanish", "French", "German", "Italian", "Portuguese", "Japanese")
     var showLanguageMenu by remember { mutableStateOf(false) }
 
     LiquidGlassBackground(isPlaying = false) {
@@ -60,18 +60,41 @@ fun SetupScreen(
             verticalArrangement = Arrangement.Center
         ) {
             // Language Selector at the top
+            val currentDisplayLang = when (currentLanguage.lowercase()) {
+                "system", "sistema", "system default" -> Translations.get(currentLanguage, "system_default")
+                "spanish", "español", "es" -> "Español"
+                "french", "français", "fr" -> "Français"
+                "german", "deutsch", "de" -> "Deutsch"
+                "italian", "italiano", "it" -> "Italiano"
+                "portuguese", "português", "pt" -> "Português"
+                "japanese", "日本語", "ja" -> "日本語"
+                else -> "English"
+            }
             Box(modifier = Modifier.align(Alignment.End)) {
                 TextButton(onClick = { showLanguageMenu = true }) {
-                    Text(text = currentLanguage, color = Color.White)
+                    Text(text = currentDisplayLang, color = Color.White)
                 }
                 DropdownMenu(
                     expanded = showLanguageMenu,
                     onDismissRequest = { showLanguageMenu = false }
                 ) {
                     availableLanguages.forEach { lang ->
+                        val displayOption = when (lang) {
+                            "System" -> Translations.get(currentLanguage, "system_default")
+                            "English" -> "English"
+                            "Spanish" -> "Español"
+                            "French" -> "Français"
+                            "German" -> "Deutsch"
+                            "Italian" -> "Italiano"
+                            "Portuguese" -> "Português"
+                            "Japanese" -> "日本語"
+                            else -> lang
+                        }
                         DropdownMenuItem(
-                            text = { Text(lang) },
+                            text = { Text(displayOption) },
                             onClick = {
+                                val code = com.example.ui.LanguageManager.getLanguageCode(lang)
+                                com.example.ui.LanguageManager.cambiarIdioma(code)
                                 onLanguageChange(lang)
                                 showLanguageMenu = false
                             }

@@ -105,6 +105,7 @@ import com.example.ui.theme.GlassTextMuted
 import com.example.ui.theme.GlassTextPrimary
 import com.example.ui.theme.GlassTextSecondary
 import com.example.ui.theme.LiquidMusicTheme
+import com.example.ui.getDisplayArtist
 
 enum class NavigationScreen {
     HOME, FOLDERS, PLAYLISTS, ALBUMS, ARTISTS, PLAYER, SETTINGS, PROFILE
@@ -127,6 +128,11 @@ class MainActivity : ComponentActivity() {
         setContent {
             LiquidMusicApp(playerManager = playerManager)
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        com.example.data.ArtistInfoFetcher.checkAndSyncWithSystemCache(this)
     }
 
     override fun onDestroy() {
@@ -200,6 +206,9 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
     }
 
         val cachedTracks by com.example.data.TrackRepository.tracks.collectAsState()
+        val isRescanningLibrary by com.example.data.TrackRepository.isRescanning.collectAsState()
+        val isRepairingCovers by com.example.data.TrackRepository.isRepairingCovers.collectAsState()
+        var isClearingCache by remember { mutableStateOf(false) }
         var loadedTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
         var showQueueSheet by remember { mutableStateOf(false) }
 
@@ -207,12 +216,9 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         LaunchedEffect(cachedTracks) {
             if (cachedTracks.isNotEmpty()) {
                 loadedTracks = cachedTracks
-                com.example.data.ArtPreExtractor.startPreExtraction(context, cachedTracks)
                 if (playerManager.playlist.value.isEmpty()) {
                     playerManager.setQueue(cachedTracks, 0, false)
                 }
-            } else {
-                com.example.data.ArtPreExtractor.startPreExtraction(context)
             }
         }
 
@@ -236,26 +242,30 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {
-                // Ignore persist errors
-            }
-            val folderTracks = AudioScanner.scanFolderUri(context, uri)
-            if (folderTracks.isNotEmpty()) {
-                coroutineScope.launch(Dispatchers.IO) {
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (e: Exception) {
+                    // Ignore persist errors
+                }
+                val folderTracks = AudioScanner.scanFolderUri(context, uri)
+                if (folderTracks.isNotEmpty()) {
                     val merged = com.example.data.TrackRepository.saveScannedTracks(context, folderTracks)
-                    kotlinx.coroutines.withContext(Dispatchers.Main) {
+                    withContext(Dispatchers.Main) {
                         loadedTracks = merged
                         playerManager.setQueue(merged, 0, false)
-                        Toast.makeText(context, "Se cargaron ${merged.size} canciones", Toast.LENGTH_SHORT).show()
+                        val msg = com.example.ui.Translations.get(appSettings.appLanguage, "folder_songs_loaded").replace("%d", merged.size.toString())
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        val msg = com.example.ui.Translations.get(appSettings.appLanguage, "no_audio_files_found")
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                     }
                 }
-            } else {
-                Toast.makeText(context, "No se encontraron archivos de audio en la carpeta", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -271,15 +281,12 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         coroutineScope.launch(Dispatchers.IO) {
             val deviceTracks = AudioScanner.scanMediaStoreAudio(context)
             if (deviceTracks.isNotEmpty()) {
-                withContext(Dispatchers.Main) {
-                    loadedTracks = deviceTracks
-                    if (playerManager.playlist.value.isEmpty()) {
-                        playerManager.setQueue(deviceTracks, 0, false)
-                    }
-                }
                 val saved = com.example.data.TrackRepository.saveScannedTracks(context, deviceTracks, force)
                 withContext(Dispatchers.Main) {
                     loadedTracks = saved
+                    if (playerManager.playlist.value.isEmpty()) {
+                        playerManager.setQueue(saved, 0, false)
+                    }
                 }
             }
         }
@@ -343,6 +350,7 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                                 track = currentTrack,
                                 isPlaying = isPlaying,
                                 isDarkMode = appSettings.isDarkMode,
+                                language = appSettings.appLanguage,
                                 onPlayPauseToggle = { playerManager.togglePlayPause() },
                                 onNext = { playerManager.nextTrack() },
                                 onPrevious = { playerManager.previousTrack() },
@@ -468,6 +476,46 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                         onUpdateSettings = { playerManager.updateSettings(it) },
                         onBack = { currentScreen = NavigationScreen.HOME },
                         onRescanAudio = { isForceRescan = true; permissionLauncher.launch(requiredPermissions) },
+                        onRepairCovers = {
+                            coroutineScope.launch {
+                                Toast.makeText(
+                                    context,
+                                    com.example.ui.Translations.get(appSettings.appLanguage, "repairing_covers_toast"),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                val repaired = com.example.data.TrackRepository.repairMissingOrCorruptArtwork(context)
+                                val msg = com.example.ui.Translations.get(appSettings.appLanguage, "covers_repaired_toast")
+                                    .replace("%d", repaired.toString())
+                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onClearCache = {
+                            coroutineScope.launch {
+                                isClearingCache = true
+                                Toast.makeText(
+                                    context,
+                                    com.example.ui.Translations.get(appSettings.appLanguage, "clearing_cache_toast"),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                                    com.example.data.ArtistInfoFetcher.clearAllData(context)
+                                    try {
+                                        coil.Coil.imageLoader(context).memoryCache?.clear()
+                                        coil.Coil.imageLoader(context).diskCache?.clear()
+                                    } catch (_: Exception) {}
+                                }
+                                playerManager.refreshCurrentArtistInfo()
+                                isClearingCache = false
+                                Toast.makeText(
+                                    context,
+                                    com.example.ui.Translations.get(appSettings.appLanguage, "cache_cleared_toast"),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        isRescanning = isRescanningLibrary,
+                        isRepairingCovers = isRepairingCovers,
+                        isClearingCache = isClearingCache,
                         onStartTour = {
                             currentScreen = NavigationScreen.HOME
                             showTour = true
@@ -481,7 +529,8 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                         onPlaylistClick = { playlistName -> 
                             initialPlaylist = playlistName
                             // Do not change currentScreen
-                        }
+                        },
+                        settings = appSettings
                     )
     
                     else -> {}
@@ -587,7 +636,8 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                     currentTrack?.let { track ->
                         coroutineScope.launch {
                             socialRepository.addTrackToPlaylist(playlistId, track.id)
-                            Toast.makeText(context, "Canción agregada a la playlist", Toast.LENGTH_SHORT).show()
+                            val msg = com.example.ui.Translations.get(appSettings.appLanguage, "song_added_to_playlist")
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
                     }
                 },
@@ -596,9 +646,15 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                         coroutineScope.launch {
                             val newId = socialRepository.createPlaylist(name)
                             socialRepository.addTrackToPlaylist(newId, track.id)
-                            Toast.makeText(context, "Playlist '$name' creada", Toast.LENGTH_SHORT).show()
+                            val msg = com.example.ui.Translations.get(appSettings.appLanguage, "playlist_created_format").replace("%s", name)
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                         }
                     }
+                },
+                onNavigateToArtist = { artistName ->
+                    initialArtist = artistName
+                    currentScreen = NavigationScreen.ARTISTS
+                    isPlayerExpanded = false
                 },
                 onBack = { isPlayerExpanded = false }
             )
@@ -617,7 +673,12 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                 onRemoveFromQueue = { idx -> playerManager.removeFromQueue(idx) },
                 onSetPlayNext = { track -> playerManager.setPlayNext(track) },
                 onMoveInQueue = { from, to -> playerManager.moveInQueue(from, to) },
-                language = appSettings.appLanguage
+                isShuffle = isShuffle,
+                loopMode = loopMode,
+                onShuffleToggle = { playerManager.toggleShuffle() },
+                onLoopCycle = { playerManager.cycleLoopMode() },
+                language = appSettings.appLanguage,
+                isDarkMode = appSettings.isDarkMode
             )
         }
 
@@ -637,6 +698,7 @@ fun MiniPlayerBar(
     track: Track?,
     isPlaying: Boolean,
     isDarkMode: Boolean = true,
+    language: String = "English",
     onPlayPauseToggle: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
@@ -687,7 +749,7 @@ fun MiniPlayerBar(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = track.artist,
+                    text = track.getDisplayArtist(language),
                     fontSize = 12.sp,
                     color = artistColor,
                     maxLines = 1,

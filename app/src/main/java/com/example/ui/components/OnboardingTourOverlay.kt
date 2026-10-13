@@ -48,6 +48,7 @@ data class TourStep(
     val defaultTitle: String,
     val defaultDesc: String,
     val targetType: TargetPlacement,
+    val pointerKey: String,
     val pointerLabel: String
 )
 
@@ -75,46 +76,51 @@ fun OnboardingTourOverlay(
                 titleKey = "tour_step1_title",
                 descKey = "tour_step1_desc",
                 icon = Icons.Default.Home,
-                defaultTitle = "¡Bienvenido a Fuzion Player!",
-                defaultDesc = "Tu música favorita, álbumes recomendados y accesos rápidos se reúnen aquí en una interfaz moderna y fluida.",
+                defaultTitle = "Welcome to Fuzion Player!",
+                defaultDesc = "Your favorite songs, recommended albums, and quick shortcuts gathered in a sleek, responsive interface.",
                 targetType = TargetPlacement.CENTER_WELCOME,
-                pointerLabel = "Inicio y Recomendaciones"
+                pointerKey = "tour_pointer_home",
+                pointerLabel = "Home & Recommendations"
             ),
             TourStep(
                 titleKey = "tour_step2_title",
                 descKey = "tour_step2_desc",
                 icon = Icons.Default.LibraryMusic,
-                defaultTitle = "Navega tu Biblioteca",
-                defaultDesc = "Explora cómodamente entre Canciones, Carpetas locales, Álbumes, Artistas y Listas de reproducción desde la barra inferior.",
+                defaultTitle = "Explore your Library",
+                defaultDesc = "Easily browse Tracks, Local folders, Albums, Artists, and Playlists using the bottom navigation bar.",
                 targetType = TargetPlacement.BOTTOM_NAV,
-                pointerLabel = "Barra de Navegación"
+                pointerKey = "tour_pointer_nav",
+                pointerLabel = "Navigation Bar"
             ),
             TourStep(
                 titleKey = "tour_step3_title",
                 descKey = "tour_step3_desc",
                 icon = Icons.Default.PlayCircle,
-                defaultTitle = "Mini-Reproductor y Gestos",
-                defaultDesc = "Toca la barra para abrir el reproductor a pantalla completa. Para minimizarlo, simplemente desliza la carátula o pantalla hacia abajo con suavidad.",
+                defaultTitle = "Mini-Player & Gestures",
+                defaultDesc = "Tap the bar to open the full-screen player. To minimize it smoothly, simply swipe down on the cover or screen.",
                 targetType = TargetPlacement.MINI_PLAYER,
-                pointerLabel = "Reproductor y Gestos"
+                pointerKey = "tour_pointer_player",
+                pointerLabel = "Player & Gestures"
             ),
             TourStep(
                 titleKey = "tour_step4_title",
                 descKey = "tour_step4_desc",
                 icon = Icons.Default.Settings,
-                defaultTitle = "Ajustes y Personalización",
-                defaultDesc = "En la parte superior accede a tu Perfil y Ajustes: cambia el tema OLED, ajusta el Ecualizador Líquido, idioma y escanea nueva música.",
+                defaultTitle = "Profile & Settings",
+                defaultDesc = "Access your profile and settings at the top: toggle OLED dark mode, tune the Liquid Equalizer, switch language, and rescan audio.",
                 targetType = TargetPlacement.TOP_BAR,
-                pointerLabel = "Perfil y Ajustes"
+                pointerKey = "tour_pointer_settings",
+                pointerLabel = "Profile & Settings"
             ),
             TourStep(
                 titleKey = "tour_step5_title",
                 descKey = "tour_step5_desc",
                 icon = Icons.Default.CheckCircle,
-                defaultTitle = "¡Todo Listo para Escuchar!",
-                defaultDesc = "Tu reproductor está configurado y optimizado con sonido de máxima fidelidad. ¡Disfruta de la mejor experiencia musical!",
+                defaultTitle = "All Set to Enjoy!",
+                defaultDesc = "Your player is configured and ready with high-fidelity audio playback. Enjoy your music!",
                 targetType = TargetPlacement.READY_FINISH,
-                pointerLabel = "¡A disfrutar!"
+                pointerKey = "tour_pointer_ready",
+                pointerLabel = "Ready to enjoy!"
             )
         )
     }
@@ -293,7 +299,7 @@ fun OnboardingTourOverlay(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = currentStep.pointerLabel,
+                                text = Translations.get(language, currentStep.pointerKey, currentStep.pointerLabel),
                                 color = Color.Black,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -334,7 +340,7 @@ fun OnboardingTourOverlay(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = currentStep.pointerLabel,
+                                text = Translations.get(language, currentStep.pointerKey, currentStep.pointerLabel),
                                 color = Color.Black,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
@@ -396,7 +402,7 @@ fun OnboardingTourOverlay(
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = Translations.get(language, "tour_step", "Paso ${currentStepIndex + 1} de $totalSteps")
+                                text = Translations.get(language, "tour_step")
                                     .replace("%d", (currentStepIndex + 1).toString()),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
@@ -410,7 +416,7 @@ fun OnboardingTourOverlay(
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = Translations.get(language, "tour_skip", "Saltar"),
+                                text = Translations.get(language, "tour_skip"),
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isDarkMode) Color(0xFFAAAAAA) else Color(0xFF666666)
@@ -496,7 +502,7 @@ fun OnboardingTourOverlay(
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                                 ) {
                                     Text(
-                                        text = Translations.get(language, "tour_prev", "Anterior"),
+                                        text = Translations.get(language, "tour_prev"),
                                         fontSize = 13.sp
                                     )
                                 }
@@ -517,9 +523,9 @@ fun OnboardingTourOverlay(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         text = if (currentStepIndex == totalSteps - 1) {
-                                            Translations.get(language, "tour_finish", "¡Empezar a escuchar!")
+                                            Translations.get(language, "tour_finish")
                                         } else {
-                                            Translations.get(language, "tour_next", "Siguiente")
+                                            Translations.get(language, "tour_next")
                                         },
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,

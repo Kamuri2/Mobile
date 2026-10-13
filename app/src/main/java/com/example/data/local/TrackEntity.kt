@@ -42,7 +42,7 @@ data class TrackEntity(
             genre = genre,
             bitrate = bitrate,
             sampleRate = sampleRate,
-            lyrics = lyrics
+            lyrics = if (com.example.data.AudioLyricsExtractor.isCorruptedLyrics(lyrics)) "" else lyrics
         )
     }
 

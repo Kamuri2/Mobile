@@ -53,8 +53,13 @@ class ArtistBioRepository {
         suspend fun getArtistBiography(artistName: String): String? =
             instance.getArtistBiographyResult(artistName)?.bio
 
-        suspend fun getArtistBiographyResult(artistName: String): ArtistBioResult? =
-            instance.getArtistBiographyResult(artistName)
+        suspend fun getArtistBiographyResult(
+            artistName: String,
+            trackTitle: String? = null,
+            albumName: String? = null,
+            genre: String? = null
+        ): ArtistBioResult? =
+            instance.getArtistBiographyResult(artistName, trackTitle, albumName, genre)
 
         fun isNonMusicDefinition(text: String?, description: String? = null): Boolean =
             instance.isNonMusicDefinition(text, description)
@@ -75,7 +80,12 @@ class ArtistBioRepository {
         "dj", "dubstep", "electronic", "beatmaker", "record label"
     )
 
-    suspend fun getArtistBiographyResult(artistName: String): ArtistBioResult? = withContext(Dispatchers.IO) {
+    suspend fun getArtistBiographyResult(
+        artistName: String,
+        trackTitle: String? = null,
+        albumName: String? = null,
+        genre: String? = null
+    ): ArtistBioResult? = withContext(Dispatchers.IO) {
         val cleanArtist = artistName.trim()
         if (cleanArtist.isBlank() || isGenericArtist(cleanArtist)) {
             return@withContext null
@@ -105,9 +115,24 @@ class ArtistBioRepository {
                     esExtract.isNullOrBlank() ||
                     isNonMusicDefinition(esExtract, esDesc)
 
-            // Búsqueda Avanzada con término de anclaje " cantante"
+            // Búsqueda Avanzada con términos de anclaje contextuales (Canción, Álbum, Género, Cantante)
             if (needsAdvancedSearch) {
-                val anchorQueries = listOf("$cleanArtist cantante", "$cleanArtist banda", "$cleanArtist músico")
+                val anchorQueries = mutableListOf<String>()
+                if (!trackTitle.isNullOrBlank() && trackTitle != "Unknown" && trackTitle != "<unknown>") {
+                    anchorQueries.add("$cleanArtist $trackTitle canción")
+                    anchorQueries.add("$cleanArtist $trackTitle")
+                }
+                if (!albumName.isNullOrBlank() && albumName != "Unknown" && albumName != "<unknown>" && albumName != "Unknown Album") {
+                    anchorQueries.add("$cleanArtist $albumName álbum")
+                    anchorQueries.add("$cleanArtist $albumName")
+                }
+                if (!genre.isNullOrBlank() && genre != "Unknown" && genre != "<unknown>") {
+                    anchorQueries.add("$cleanArtist $genre")
+                }
+                anchorQueries.add("$cleanArtist cantante")
+                anchorQueries.add("$cleanArtist banda")
+                anchorQueries.add("$cleanArtist músico")
+
                 for (query in anchorQueries) {
                     val searchName = URLEncoder.encode(query, "UTF-8")
                     val searchUrl = "https://es.wikipedia.org/w/api.php?action=query&list=search&srsearch=$searchName&utf8=&format=json&origin=*"
@@ -146,6 +171,9 @@ class ArtistBioRepository {
             val finalEsType = esResponse?.optString("type")
             val finalEsDesc = esResponse?.optString("description")
             val finalEsExtract = esResponse?.optString("extract")
+            val esPhoto = esResponse?.optJSONObject("originalimage")?.optString("source")?.takeIf { it.isNotBlank() }
+                ?: esResponse?.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() }
+
             if (esResponse != null &&
                 !finalEsExtract.isNullOrBlank() &&
                 finalEsType != "disambiguation" &&
@@ -154,8 +182,8 @@ class ArtistBioRepository {
                 return@withContext ArtistBioResult(
                     bio = sanitizeExtract(finalEsExtract),
                     origin = audioDbResult?.origin,
-                    fanartUrl = audioDbResult?.fanartUrl,
-                    thumbUrl = audioDbResult?.thumbUrl,
+                    fanartUrl = audioDbResult?.fanartUrl ?: esPhoto,
+                    thumbUrl = audioDbResult?.thumbUrl ?: esPhoto,
                     diedYear = audioDbResult?.diedYear,
                     genre = audioDbResult?.genre,
                     source = "wikipedia_es"
@@ -163,13 +191,14 @@ class ArtistBioRepository {
             }
 
             // ==================== 3. WIKIPEDIA API (INGLÉS RESPALDO) ====================
-            val enBio = fetchEnglishWikipediaBio(cleanArtist)
-            if (!enBio.isNullOrBlank()) {
+            val enResult = fetchEnglishWikipediaBioAndImage(cleanArtist, trackTitle, albumName, genre)
+            val enBio = enResult?.first
+            if (enResult != null && !enBio.isNullOrBlank()) {
                 return@withContext ArtistBioResult(
                     bio = sanitizeExtract(enBio),
                     origin = audioDbResult?.origin,
-                    fanartUrl = audioDbResult?.fanartUrl,
-                    thumbUrl = audioDbResult?.thumbUrl,
+                    fanartUrl = audioDbResult?.fanartUrl ?: enResult.second,
+                    thumbUrl = audioDbResult?.thumbUrl ?: enResult.second,
                     diedYear = audioDbResult?.diedYear,
                     genre = audioDbResult?.genre,
                     source = "wikipedia_en"
@@ -255,7 +284,12 @@ class ArtistBioRepository {
         return null
     }
 
-    private fun fetchEnglishWikipediaBio(artistName: String): String? {
+    private fun fetchEnglishWikipediaBioAndImage(
+        artistName: String,
+        trackTitle: String? = null,
+        albumName: String? = null,
+        genre: String? = null
+    ): Pair<String?, String?>? {
         return try {
             val encodedName = URLEncoder.encode(artistName, "UTF-8")
             val url = "https://en.wikipedia.org/api/rest_v1/page/summary/$encodedName"
@@ -274,7 +308,21 @@ class ArtistBioRepository {
                     isNonMusicDefinition(extract, desc)
 
             if (needsRefinement) {
-                val anchorTerms = listOf("singer", "band", "musician", "music", "producer")
+                val anchorTerms = mutableListOf<String>()
+                if (!trackTitle.isNullOrBlank() && trackTitle != "Unknown" && trackTitle != "<unknown>") {
+                    anchorTerms.add("$trackTitle song")
+                }
+                if (!albumName.isNullOrBlank() && albumName != "Unknown" && albumName != "<unknown>" && albumName != "Unknown Album") {
+                    anchorTerms.add("$albumName album")
+                }
+                if (!genre.isNullOrBlank() && genre != "Unknown" && genre != "<unknown>") {
+                    anchorTerms.add("$genre music")
+                }
+                anchorTerms.add("singer")
+                anchorTerms.add("band")
+                anchorTerms.add("musician")
+                anchorTerms.add("music")
+                anchorTerms.add("producer")
                 for (anchor in anchorTerms) {
                     val searchName = URLEncoder.encode("$artistName $anchor", "UTF-8")
                     val searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=$searchName&utf8=&format=json&origin=*"
@@ -312,12 +360,15 @@ class ArtistBioRepository {
             val finalType = responseJson?.optString("type")
             val finalDesc = responseJson?.optString("description")
             val finalExtract = responseJson?.optString("extract")
+            val photo = responseJson?.optJSONObject("originalimage")?.optString("source")?.takeIf { it.isNotBlank() }
+                ?: responseJson?.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() }
+
             if (responseJson != null &&
                 !finalExtract.isNullOrBlank() &&
                 finalType != "disambiguation" &&
                 !isNonMusicDefinition(finalExtract, finalDesc)
             ) {
-                finalExtract
+                Pair(finalExtract, photo)
             } else {
                 null
             }

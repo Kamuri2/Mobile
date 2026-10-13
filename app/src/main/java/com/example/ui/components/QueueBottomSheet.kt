@@ -32,6 +32,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -87,7 +90,12 @@ fun QueueBottomSheet(
     onRemoveFromQueue: (Int) -> Unit,
     onSetPlayNext: (Track) -> Unit,
     onMoveInQueue: ((Int, Int) -> Unit)? = null,
-    language: String = "English"
+    isShuffle: Boolean = false,
+    loopMode: com.example.player.LoopMode = com.example.player.LoopMode.OFF,
+    onShuffleToggle: () -> Unit = {},
+    onLoopCycle: () -> Unit = {},
+    language: String = "English",
+    isDarkMode: Boolean = true
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val lazyListState = rememberLazyListState()
@@ -102,9 +110,8 @@ fun QueueBottomSheet(
     val hasCurrentPlayingAtTop = currentIndex in queue.indices
     val minReorderSlot = if (hasCurrentPlayingAtTop) 1 else 0
 
-    val isSpanish = language.startsWith("Esp", ignoreCase = true)
-    val nowPlayingLabel = if (isSpanish) "REPRODUCIENDO AHORA" else "NOW PLAYING"
-    val nextUpLabel = if (isSpanish) "A CONTINUACIÓN" else "NEXT UP"
+    val nowPlayingLabel = com.example.ui.Translations.get(language, "playing_now")
+    val nextUpLabel = com.example.ui.Translations.get(language, "next").uppercase()
 
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var targetIndex by remember { mutableStateOf<Int?>(null) }
@@ -144,8 +151,8 @@ fun QueueBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
-        containerColor = Color(0xFF1A1A1A),
-        scrimColor = Color.Black.copy(alpha = 0.5f),
+        containerColor = if (isDarkMode) Color(0xFF18181A) else Color(0xFFF9F9FB),
+        scrimColor = Color.Black.copy(alpha = if (isDarkMode) 0.5f else 0.35f),
         dragHandle = {
             Column(
                 modifier = Modifier
@@ -158,7 +165,7 @@ fun QueueBottomSheet(
                         .width(40.dp)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White.copy(alpha = 0.4f))
+                        .background(if (isDarkMode) Color.White.copy(alpha = 0.35f) else Color.Black.copy(alpha = 0.25f))
                 )
             }
         }
@@ -167,26 +174,85 @@ fun QueueBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
         ) {
-            // Header area
-            Column(
+            // Header area with Play Queue title and Shuffle/Repeat action buttons
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 4.dp),
-                horizontalAlignment = Alignment.Start
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = com.example.ui.Translations.get(language, "play_queue"),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                val remainingCount = (queue.size - (currentIndex + 1)).coerceAtLeast(0)
-                Text(
-                    text = "$remainingCount ${com.example.ui.Translations.get(language, "songs")}",
-                    fontSize = 14.sp,
-                    color = GlassTextMuted
-                )
+                Column {
+                    Text(
+                        text = com.example.ui.Translations.get(language, "play_queue"),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDarkMode) Color.White else Color(0xFF111111)
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    val remainingCount = (queue.size - (currentIndex + 1)).coerceAtLeast(0)
+                    Text(
+                        text = "$remainingCount ${com.example.ui.Translations.get(language, "songs")}",
+                        fontSize = 14.sp,
+                        color = if (isDarkMode) GlassTextMuted else Color(0xFF6B7280)
+                    )
+                }
+
+                // Shuffle & Repeat action buttons
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Shuffle Button
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isShuffle) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                else if (isDarkMode) Color.White.copy(alpha = 0.08f)
+                                else Color.Black.copy(alpha = 0.06f)
+                            )
+                            .clickable { onShuffleToggle() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = "Shuffle Queue",
+                            tint = if (isShuffle) MaterialTheme.colorScheme.primary
+                            else if (isDarkMode) Color.White.copy(alpha = 0.8f)
+                            else Color.Black.copy(alpha = 0.75f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+
+                    // Repeat Button
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (loopMode != com.example.player.LoopMode.OFF) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                else if (isDarkMode) Color.White.copy(alpha = 0.08f)
+                                else Color.Black.copy(alpha = 0.06f)
+                            )
+                            .clickable { onLoopCycle() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val repeatIcon = when (loopMode) {
+                            com.example.player.LoopMode.REPEAT_ONE -> Icons.Default.RepeatOne
+                            else -> Icons.Default.Repeat
+                        }
+                        Icon(
+                            imageVector = repeatIcon,
+                            contentDescription = "Repeat Queue",
+                            tint = if (loopMode != com.example.player.LoopMode.OFF) MaterialTheme.colorScheme.primary
+                            else if (isDarkMode) Color.White.copy(alpha = 0.8f)
+                            else Color.Black.copy(alpha = 0.75f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -197,7 +263,7 @@ fun QueueBottomSheet(
                         .height(300.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(com.example.ui.Translations.get(language, "no_track_playing"), color = GlassTextMuted)
+                    Text(com.example.ui.Translations.get(language, "no_track_playing"), color = if (isDarkMode) GlassTextMuted else Color(0xFF888888))
                 }
             } else {
                 Box(
@@ -275,16 +341,20 @@ fun QueueBottomSheet(
                             val isTargetBelow = draggingIndex != null && draggingIndex!! < visibleIdx
                             val canDragThisItem = if (hasCurrentPlayingAtTop) visibleIdx >= 1 else true
 
+                            val canSwipeThisItem = draggingIndex == null && (!hasCurrentPlayingAtTop || visibleIdx > 0)
+
                             val dismissState = rememberSwipeToDismissBoxState(
                                 confirmValueChange = { value ->
                                     when (value) {
                                         SwipeToDismissBoxValue.EndToStart -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             onRemoveFromQueue(realIndex)
                                             true
                                         }
                                         SwipeToDismissBoxValue.StartToEnd -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             onSetPlayNext(track)
-                                            true
+                                            false
                                         }
                                         else -> false
                                     }
@@ -315,7 +385,7 @@ fun QueueBottomSheet(
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         letterSpacing = 1.sp,
-                                        color = GlassTextMuted,
+                                        color = if (isDarkMode) GlassTextMuted else Color(0xFF6B7280),
                                         modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 4.dp)
                                     )
                                 }
@@ -345,8 +415,8 @@ fun QueueBottomSheet(
                                 ) {
                                     SwipeToDismissBox(
                                         state = dismissState,
-                                        enableDismissFromStartToEnd = draggingIndex == null,
-                                        enableDismissFromEndToStart = draggingIndex == null,
+                                        enableDismissFromStartToEnd = canSwipeThisItem,
+                                        enableDismissFromEndToStart = canSwipeThisItem,
                                         backgroundContent = {
                                             val direction = dismissState.dismissDirection
                                             val color by animateColorAsState(
@@ -374,7 +444,7 @@ fun QueueBottomSheet(
                                                         Icon(imageVector = Icons.Default.SkipNext, contentDescription = null, tint = Color.White)
                                                         Spacer(modifier = Modifier.width(6.dp))
                                                         Text(
-                                                            text = "SIGUIENTE",
+                                                            text = com.example.ui.Translations.get(language, "next").uppercase(),
                                                             fontWeight = FontWeight.Bold,
                                                             fontSize = 13.sp,
                                                             color = Color.White
@@ -389,6 +459,7 @@ fun QueueBottomSheet(
                                                 isCurrent = isCurrent,
                                                 isBeingDragged = false,
                                                 showDragHandle = canDragThisItem,
+                                                isDarkMode = isDarkMode,
                                                 onGrab = {
                                                     val itemInfo = lazyListState.layoutInfo.visibleItemsInfo.find { it.index == visibleIdx }
                                                     val initialY = itemInfo?.offset?.toFloat() ?: (visibleIdx * cardHeightPx)
@@ -431,13 +502,14 @@ fun QueueBottomSheet(
                                     .shadow(20.dp, RoundedCornerShape(16.dp), spotColor = MaterialTheme.colorScheme.primary)
                                     .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp))
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(Color(0xFF282828))
+                                    .background(if (isDarkMode) Color(0xFF282828) else Color.White)
                             ) {
                                 QueueTrackRowItem(
                                     track = draggedTrack,
                                     isCurrent = draggingIndex == 0 && hasCurrentPlayingAtTop,
                                     isBeingDragged = true,
                                     showDragHandle = true,
+                                    isDarkMode = isDarkMode,
                                     onGrab = {},
                                     onClick = {}
                                 )
@@ -457,6 +529,7 @@ private fun QueueTrackRowItem(
     isCurrent: Boolean,
     isBeingDragged: Boolean,
     showDragHandle: Boolean = true,
+    isDarkMode: Boolean = true,
     onGrab: () -> Unit = {},
     onClick: () -> Unit
 ) {
@@ -476,9 +549,9 @@ private fun QueueTrackRowItem(
             .clip(RoundedCornerShape(16.dp))
             .background(
                 when {
-                    isBeingDragged -> Color(0xFF2C2C2E)
-                    isCurrent -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                    else -> Color(0x1AFFFFFF)
+                    isBeingDragged -> if (isDarkMode) Color(0xFF2C2C2E) else Color(0xFFE5E5EA)
+                    isCurrent -> MaterialTheme.colorScheme.primary.copy(alpha = if (isDarkMode) 0.16f else 0.12f)
+                    else -> if (isDarkMode) Color(0x1AFFFFFF) else Color(0x0C000000)
                 }
             )
             .clickable(enabled = !isBeingDragged) { onClick() }
@@ -493,7 +566,7 @@ private fun QueueTrackRowItem(
                 modifier = Modifier
                     .size(46.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0x1AFFFFFF)),
+                    .background(if (isDarkMode) Color(0x1AFFFFFF) else Color(0x0F000000)),
                 contentAlignment = Alignment.Center
             ) {
                 TrackImage(track = track, modifier = Modifier.fillMaxSize())
@@ -507,7 +580,7 @@ private fun QueueTrackRowItem(
                     text = track.title,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (isBeingDragged || isCurrent) MaterialTheme.colorScheme.primary else Color.White,
+                    color = if (isBeingDragged || isCurrent) MaterialTheme.colorScheme.primary else if (isDarkMode) Color.White else Color(0xFF111111),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -515,7 +588,7 @@ private fun QueueTrackRowItem(
                 Text(
                     text = track.artist,
                     fontSize = 12.sp,
-                    color = GlassTextSecondary,
+                    color = if (isDarkMode) GlassTextSecondary else Color(0xFF555555),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -540,8 +613,8 @@ private fun QueueTrackRowItem(
                 ) {
                     Icon(
                         imageVector = Icons.Default.DragHandle,
-                        contentDescription = "Arrastrar para reordenar en la cola",
-                        tint = if (isBeingDragged || isCurrent) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.6f),
+                        contentDescription = null,
+                        tint = if (isBeingDragged || isCurrent) MaterialTheme.colorScheme.primary else if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.5f),
                         modifier = Modifier.size(24.dp)
                     )
                 }

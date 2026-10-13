@@ -5,11 +5,13 @@ import android.util.Log
 import com.example.data.local.AppDatabase
 import com.example.data.local.TrackEntity
 import com.example.model.Track
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -17,6 +19,12 @@ object TrackRepository {
     private const val TAG = "TrackRepository"
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
     val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
+
+    private val _isRescanning = MutableStateFlow(false)
+    val isRescanning: StateFlow<Boolean> = _isRescanning.asStateFlow()
+
+    private val _isRepairingCovers = MutableStateFlow(false)
+    val isRepairingCovers: StateFlow<Boolean> = _isRepairingCovers.asStateFlow()
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var isInitialized = false
@@ -45,7 +53,14 @@ object TrackRepository {
     suspend fun saveScannedTracks(context: Context, newTracks: List<Track>, forceRescan: Boolean = false): List<Track> {
         if (newTracks.isEmpty()) return emptyList()
         return withContext(Dispatchers.IO) {
+            _isRescanning.value = true
             try {
+                if (forceRescan) {
+                    // Limpiar caches de portadas en memoria y archivos temporales/corruptos
+                    AlbumArtExtractor(context).resetArtworkCaches(purgeAllArtFiles = false)
+                    ArtworkExtractor.resetArtworkCaches()
+                }
+
                 val db = AppDatabase.getDatabase(context)
                 val existing = db.trackDao().getAllTracks().associateBy { it.id }
 
@@ -53,15 +68,24 @@ object TrackRepository {
                 val mergedList = newTracks.map { track ->
                     val cached = existing[track.id]
                     if (!forceRescan && cached != null) {
-                        cached.toTrack().copy(
+                        val cachedTrack = cached.toTrack()
+                        cachedTrack.copy(
                             contentUri = track.contentUri,
                             path = if (track.path.isNotBlank()) track.path else cached.path,
-                            albumArtUri = track.albumArtUri ?: cached.toTrack().albumArtUri
+                            albumArtUri = track.albumArtUri ?: cachedTrack.albumArtUri,
+                            lyrics = if (com.example.data.AudioLyricsExtractor.isCorruptedLyrics(cachedTrack.lyrics)) "" else cachedTrack.lyrics
                         )
                     } else {
-                        track
+                        track.copy(
+                            lyrics = if (com.example.data.AudioLyricsExtractor.isCorruptedLyrics(track.lyrics)) "" else track.lyrics
+                        )
                     }
                 }.distinctBy { it.id }.sortedBy { it.title.lowercase() }
+
+                // Purgar letras corruptas residuales de Room
+                try {
+                    LyricsRepository.purgeCorruptedLyrics(context)
+                } catch (_: Exception) {}
 
                 // Immediately update StateFlow and save to Room
                 _tracks.value = mergedList
@@ -75,15 +99,17 @@ object TrackRepository {
                     } catch (e: Exception) {}
                 }
 
-                // Progressive background enrichment for tracks lacking tags/lyrics
+                // Progressive background enrichment for tracks lacking tags/lyrics/artwork
                 val tracksToEnrich = mergedList.filter { track ->
-                    forceRescan || track.genre.isBlank() || track.lyrics.isBlank() || track.bitrate.isBlank()
-                }
+                    forceRescan || (track.genre.isBlank() && track.bitrate.isBlank()) || isArtworkMissingOrCorrupt(context, track)
+                }.take(if (forceRescan) 200 else 40)
 
                 if (tracksToEnrich.isNotEmpty()) {
                     scope.launch {
                         val albumUriMap = mutableMapOf<String, android.net.Uri?>()
+                        val enrichedBatch = mutableListOf<TrackEntity>()
                         for (track in tracksToEnrich) {
+                            if (!isActive) break
                             try {
                                 var enriched = MetadataReader.extractFullMetadata(context, track)
                                 val albumKey = AlbumArtExtractor.getAlbumKey(enriched)
@@ -97,10 +123,17 @@ object TrackRepository {
                                 if (thumbUri != null) {
                                     enriched = enriched.copy(albumArtUri = thumbUri)
                                 }
-                                db.trackDao().insertOrUpdateTracks(listOf(TrackEntity.fromTrack(enriched)))
-                            } catch (e: Exception) {
-                                // Ignore single file tag reading error
-                            }
+                                enrichedBatch.add(TrackEntity.fromTrack(enriched))
+                                if (enrichedBatch.size >= 10) {
+                                    db.trackDao().insertOrUpdateTracks(enrichedBatch.toList())
+                                    enrichedBatch.clear()
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        if (enrichedBatch.isNotEmpty()) {
+                            try {
+                                db.trackDao().insertOrUpdateTracks(enrichedBatch)
+                            } catch (_: Exception) {}
                         }
                     }
                 }
@@ -110,19 +143,113 @@ object TrackRepository {
                 Log.e(TAG, "Error saving scanned tracks to Room: ${e.message}")
                 _tracks.value = newTracks
                 newTracks
+            } finally {
+                _isRescanning.value = false
             }
         }
     }
 
+    /**
+     * Determina si una portada no cargó bien, no existe, está corrupta o quedó a medio escanear.
+     */
+    fun isArtworkMissingOrCorrupt(context: Context, track: Track): Boolean {
+        // 1. Si no tiene URI de carátula y tampoco tiene archivo HD pre-extraído válido
+        val existingArt = AlbumArtExtractor(context).getExistingArtFile(track)
+        if (existingArt != null) {
+            // Verificar si el archivo es válido y mide más de 500 bytes
+            return !AlbumArtExtractor.isValidImageFile(existingArt)
+        }
+
+        val artUri = track.albumArtUri
+        if (artUri == null || artUri.toString().isBlank()) {
+            return true
+        }
+
+        // 2. Si tiene URI de tipo file, validar que el archivo exista en disco y tenga tamaño > 500 bytes
+        if (artUri.scheme == "file" || artUri.path?.startsWith("/") == true) {
+            val file = File(artUri.path ?: "")
+            if (!file.exists() || file.length() < 500L) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Repara y re-extrae rápidamente únicamente las carátulas que fallaron, quedaron cortadas
+     * o no se cargaron bien, sin tener que reescanear toda la biblioteca de cero.
+     */
+    suspend fun repairMissingOrCorruptArtwork(context: Context): Int {
+        return withContext(Dispatchers.IO) {
+            _isRepairingCovers.value = true
+            var repairedCount = 0
+            try {
+                // Limpiar cachés negativas para permitir reintentos limpios
+                AlbumArtExtractor(context).resetArtworkCaches(purgeAllArtFiles = false)
+                ArtworkExtractor.resetArtworkCaches()
+
+                val db = AppDatabase.getDatabase(context)
+                val currentTracks = _tracks.value.ifEmpty {
+                    db.trackDao().getAllTracks().map { it.toTrack() }
+                }
+
+                val tracksNeedingRepair = currentTracks.filter { track ->
+                    isArtworkMissingOrCorrupt(context, track)
+                }
+
+                if (tracksNeedingRepair.isEmpty()) {
+                    return@withContext 0
+                }
+
+                val albumExtractor = AlbumArtExtractor(context)
+                val updatedEntities = mutableListOf<TrackEntity>()
+                val updatedList = currentTracks.toMutableList()
+
+                for (track in tracksNeedingRepair) {
+                    if (!isActive) break
+                    try {
+                        // 1. Extraer a través de AlbumArtExtractor (alta resolución directa)
+                        val highResFile = albumExtractor.getHighResArt(track)
+                        val newArtUri = if (highResFile != null && AlbumArtExtractor.isValidImageFile(highResFile)) {
+                            android.net.Uri.fromFile(highResFile)
+                        } else {
+                            ArtworkExtractor.saveArtworkToInternalCache(context, track)
+                        }
+
+                        if (newArtUri != null) {
+                            val updatedTrack = track.copy(albumArtUri = newArtUri)
+                            val idx = updatedList.indexOfFirst { it.id == track.id }
+                            if (idx != -1) {
+                                updatedList[idx] = updatedTrack
+                            }
+                            updatedEntities.add(TrackEntity.fromTrack(updatedTrack))
+                            repairedCount++
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                if (updatedEntities.isNotEmpty()) {
+                    db.trackDao().insertOrUpdateTracks(updatedEntities)
+                    _tracks.value = updatedList
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reparando carátulas: ${e.message}")
+            } finally {
+                _isRepairingCovers.value = false
+            }
+            repairedCount
+        }
+    }
+
     suspend fun updateTrackLyrics(context: Context, trackId: Long, lyrics: String) {
-        if (lyrics.isBlank()) return
+        val cleanLyrics = if (AudioLyricsExtractor.isCorruptedLyrics(lyrics)) "" else AudioLyricsExtractor.cleanExtractedLyrics(lyrics)
         withContext(Dispatchers.IO) {
             try {
                 val db = AppDatabase.getDatabase(context)
-                db.trackDao().updateLyrics(trackId, lyrics)
+                db.trackDao().updateLyrics(trackId, cleanLyrics)
 
                 val updated = _tracks.value.map {
-                    if (it.id == trackId) it.copy(lyrics = lyrics) else it
+                    if (it.id == trackId) it.copy(lyrics = cleanLyrics) else it
                 }
                 _tracks.value = updated
                 Log.d(TAG, "Updated persistent lyrics for track ID: $trackId")
