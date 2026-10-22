@@ -164,7 +164,7 @@ fun LyricsScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = {
-                    currentTrack?.let { playerManager.loadLyricsForTrack(it, forceRescan = true) }
+                    currentTrack?.let { playerManager.retryScanTrackExtras(it) }
                 }) {
                     Icon(
                         imageVector = Icons.Default.Refresh,

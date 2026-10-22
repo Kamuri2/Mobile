@@ -3,6 +3,7 @@ package com.example.data
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.example.model.Track
 import org.jaudiotagger.audio.AudioFileIO
 import org.jaudiotagger.tag.FieldKey
 import org.jaudiotagger.tag.Tag
@@ -41,12 +42,27 @@ object AudioLyricsExtractor {
      */
     fun extractLyrics(
         context: Context,
+        track: Track,
+        forceRescan: Boolean = false
+    ): String? {
+        val result = extractLyrics(
+            context = context,
+            audioUri = track.contentUri,
+            audioFilePath = track.path,
+            artist = track.artist,
+            title = track.title
+        )
+        return result.lyrics
+    }
+
+    fun extractLyrics(
+        context: Context,
         audioUri: Uri,
         audioFilePath: String?,
         artist: String? = null,
         title: String? = null
     ): LyricsResult {
-        // 1. Archivos .lrc o .txt adyacentes (ultrarrápido, mínimo consumo de memoria)
+        // 1. Archivos .lrc o .txt adyacentes (ultrarrápido, mínimo consumo de memoria, soporta song.opus.lrc)
         val externalLyrics = checkAdjacentLyricsFile(audioFilePath)
         if (externalLyrics != null && externalLyrics.isNotBlank() && !isCorruptedLyrics(externalLyrics)) {
             val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(externalLyrics)
@@ -54,8 +70,27 @@ object AudioLyricsExtractor {
             return LyricsResult(lyrics = cleanExtractedLyrics(externalLyrics), isSynced = isSynced, source = "EXTERNAL_FILE")
         }
 
-        // 2. Si existe ruta directa en disco, leer con JAudioTagger sin crear archivos temporales
-        if (!audioFilePath.isNullOrBlank() && File(audioFilePath).canRead()) {
+        val isOpusOrOgg = (!audioFilePath.isNullOrBlank() && (audioFilePath.endsWith(".opus", true) || audioFilePath.endsWith(".ogg", true))) ||
+            (try { context.contentResolver.getType(audioUri)?.lowercase()?.let { it.contains("opus") || it.contains("ogg") } } catch (_: Exception) { null } == true)
+
+        // 2. Si es archivo Opus u Ogg, usar el motor especializado directo (JAudioTagger no soporta Opus)
+        if (isOpusOrOgg) {
+            val opusResult = extractOpusOrOggLyrics(context, audioUri, audioFilePath)
+            if (opusResult != null && !opusResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(opusResult.lyrics)) {
+                Log.d(TAG, "Lyrics found via Opus/Ogg specialized engine: ${opusResult.source}")
+                return opusResult
+            }
+        }
+
+        // 3. Escaneo directo de cabeceras estructuradas (ID3v2, FLAC nativo, MP4, OGG/OPUS) sin copiar archivo
+        val streamResult = scanStreamForLyrics(context, audioUri, audioFilePath)
+        if (streamResult != null && !streamResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(streamResult.lyrics)) {
+            Log.d(TAG, "Lyrics found via direct stream parser: ${streamResult.source}")
+            return streamResult
+        }
+
+        // 4. Si es formato no-Opus y existe ruta directa en disco, leer con JAudioTagger
+        if (!isOpusOrOgg && !audioFilePath.isNullOrBlank() && File(audioFilePath).canRead()) {
             val embeddedResult = extractEmbeddedLyrics(context, audioUri, audioFilePath)
             if (embeddedResult != null && !embeddedResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(embeddedResult.lyrics)) {
                 Log.d(TAG, "Lyrics found via JAudioTagger (direct file): ${embeddedResult.source}")
@@ -63,24 +98,15 @@ object AudioLyricsExtractor {
             }
         }
 
-        // 3. Escaneo directo de cabeceras estructuradas (ID3v2, FLAC nativo, MP4) sin copiar archivo
-        val streamResult = scanStreamForLyrics(context, audioUri, audioFilePath)
-        if (streamResult != null && !streamResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(streamResult.lyrics)) {
-            Log.d(TAG, "Lyrics found via direct stream parser: ${streamResult.source}")
-            return streamResult
+        // 5. Escaneo profundo de contingencia para paquetes Opus/Ogg Vorbis (verificando campos de letras explícitos)
+        val deepScanResult = extractOpusOrOggLyrics(context, audioUri, audioFilePath)
+        if (deepScanResult != null && !deepScanResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(deepScanResult.lyrics)) {
+            Log.d(TAG, "Lyrics found via Opus deep scan: ${deepScanResult.source}")
+            return deepScanResult
         }
 
-        // 4. FOURTH SOURCE: Deep scan para paquetes Opus/Ogg Vorbis (verificando campos de letras explícitos)
-        if (audioFilePath != null) {
-            val deepScanResult = getOpusLyricsDeepScan(audioFilePath)
-            if (deepScanResult != null && !deepScanResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(deepScanResult.lyrics)) {
-                Log.d(TAG, "Lyrics found via Opus deep scan: ${deepScanResult.source}")
-                return deepScanResult
-            }
-        }
-
-        // 5. FIFTH SOURCE: Fallback JAudioTagger para URIs virtuales si todo lo anterior falló
-        if (audioFilePath.isNullOrBlank() && audioUri != Uri.EMPTY) {
+        // 6. Fallback JAudioTagger para URIs virtuales si todo lo anterior falló (solo para formatos no-Opus)
+        if (!isOpusOrOgg && audioFilePath.isNullOrBlank() && audioUri != Uri.EMPTY) {
             val embeddedFallback = extractEmbeddedLyrics(context, audioUri, null)
             if (embeddedFallback != null && !embeddedFallback.lyrics.isNullOrBlank() && !isCorruptedLyrics(embeddedFallback.lyrics)) {
                 return embeddedFallback
@@ -116,8 +142,8 @@ object AudioLyricsExtractor {
             }
             if (inputStream == null) return null
 
-            // Leemos hasta 1MB iniciales de la pista para metadatos ID3/FLAC/MP4
-            val maxHeaderBytes = 1 * 1024 * 1024
+            // Leemos hasta 4MB iniciales de la pista para metadatos ID3/FLAC/MP4/OGG/OPUS
+            val maxHeaderBytes = 4 * 1024 * 1024
             val buffer = ByteArray(maxHeaderBytes)
             var totalRead = 0
             inputStream.use { input ->
@@ -131,20 +157,26 @@ object AudioLyricsExtractor {
             if (totalRead < 16) return null
             val headerBytes = if (totalRead == maxHeaderBytes) buffer else buffer.copyOfRange(0, totalRead)
 
-            // A. Cabecera ID3v2 (MP3, WAV, FLAC empaquetado con ID3)
+            // A. Cabecera ID3v2 (MP3, WAV, FLAC o paquetes Opus empaquetados con ID3)
             val id3Result = parseId3v2Bytes(headerBytes)
             if (id3Result != null && !id3Result.lyrics.isNullOrBlank() && !isCorruptedLyrics(id3Result.lyrics)) {
                 return id3Result
             }
 
-            // B. Cabecera nativa FLAC ("fLaC" con bloques VORBIS_COMMENT)
+            // B. Contenedor OGG / OPUS ("OggS" con paquetes OpusTags o \x03vorbis)
+            val oggResult = parseOggOpusBytes(headerBytes)
+            if (oggResult != null && !oggResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(oggResult.lyrics)) {
+                return oggResult
+            }
+
+            // C. Cabecera nativa FLAC ("fLaC" con bloques VORBIS_COMMENT)
             val flacLyrics = parseFlacBytes(headerBytes)
             if (!flacLyrics.isNullOrBlank() && !isCorruptedLyrics(flacLyrics)) {
                 val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(flacLyrics)
                 return LyricsResult(lyrics = flacLyrics, isSynced = isSynced, source = "DIRECT_FLAC_VORBIS")
             }
 
-            // C. Átomo MP4/M4A ("©lyr" / "----")
+            // D. Átomo MP4/M4A ("©lyr" / "----")
             val mp4Lyrics = parseMp4Bytes(headerBytes)
             if (!mp4Lyrics.isNullOrBlank() && !isCorruptedLyrics(mp4Lyrics)) {
                 val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(mp4Lyrics)
@@ -405,6 +437,11 @@ object AudioLyricsExtractor {
     }
 
     fun parseVorbisCommentBlock(block: ByteArray): String? {
+        val res = parseVorbisCommentBlockToResult(block, "VORBIS_COMMENT")
+        return res?.lyrics
+    }
+
+    fun parseVorbisCommentBlockToResult(block: ByteArray, sourceLabel: String = "VORBIS_COMMENT"): LyricsResult? {
         if (block.size < 8) return null
         fun readLE32(idx: Int): Int {
             if (idx + 3 >= block.size) return 0
@@ -413,13 +450,33 @@ object AudioLyricsExtractor {
                    ((block[idx+2].toInt() and 0xFF) shl 16) or
                    ((block[idx+3].toInt() and 0xFF) shl 24)
         }
+
         var offset = 0
+        // Omitir cabecera mágica si está presente:
+        // "OpusTags" (8 bytes) o "\x03vorbis" (7 bytes)
+        if (block.size >= 8 &&
+            block[0] == 'O'.code.toByte() && block[1] == 'p'.code.toByte() &&
+            block[2] == 'u'.code.toByte() && block[3] == 's'.code.toByte() &&
+            block[4] == 'T'.code.toByte() && block[5] == 'a'.code.toByte() &&
+            block[6] == 'g'.code.toByte() && block[7] == 's'.code.toByte()) {
+            offset = 8
+        } else if (block.size >= 7 &&
+            block[0] == 3.toByte() && block[1] == 'v'.code.toByte() &&
+            block[2] == 'o'.code.toByte() && block[3] == 'r'.code.toByte() &&
+            block[4] == 'b'.code.toByte() && block[5] == 'i'.code.toByte() &&
+            block[6] == 's'.code.toByte()) {
+            offset = 7
+        }
+
+        if (offset + 4 > block.size) return null
         val vendorLen = readLE32(offset)
+        if (vendorLen < 0 || offset + 4 + vendorLen > block.size) return null
         offset += 4 + vendorLen
         if (offset + 4 > block.size) return null
 
         val userCommentCount = readLE32(offset)
         offset += 4
+        if (userCommentCount < 0) return null
 
         var candidateLyrics: String? = null
 
@@ -428,6 +485,19 @@ object AudioLyricsExtractor {
             val commentLen = readLE32(offset)
             offset += 4
             if (commentLen < 0 || offset + commentLen > block.size) break
+
+            // Si es imagen de carátula en Base64 (METADATA_BLOCK_PICTURE), omitir para ahorrar memoria
+            if (commentLen > 24 &&
+                block[offset] == 'M'.code.toByte() &&
+                block[offset+1] == 'E'.code.toByte() &&
+                block[offset+2] == 'T'.code.toByte() &&
+                block[offset+3] == 'A'.code.toByte()) {
+                val headerCheck = String(block, offset, 23.coerceAtMost(commentLen), Charsets.US_ASCII)
+                if (headerCheck.equals("METADATA_BLOCK_PICTURE=", ignoreCase = true)) {
+                    offset += commentLen
+                    continue
+                }
+            }
 
             val commentSlice = block.copyOfRange(offset, offset + commentLen)
             offset += commentLen
@@ -442,8 +512,9 @@ object AudioLyricsExtractor {
                         key.contains("LANG") || key.contains("COPYRIGHT") || key.contains("SORT")
                     val isLyricsKey = !isBlacklistedKey && (
                         key == "LYRICS" || key == "UNSYNCEDLYRICS" || key == "UNSYNCED LYRICS" ||
-                        key == "SYNCEDLYRICS" || key == "SYNCED LYRICS" || key == "LYRICS_SYNCED" ||
-                        key == "LRC" || key == "TEXT" || key == "USLT" || key == "SYLT" ||
+                        key == "UNSYNCED_LYRICS" || key == "SYNCEDLYRICS" || key == "SYNCED LYRICS" ||
+                        key == "SYNCED_LYRICS" || key == "LYRICS_SYNCED" ||
+                        key == "LRC" || key == "TEXT" || key == "USLT" || key == "SYLT" || key == "LYRIC" ||
                         (key.startsWith("LYRIC") && !key.contains("IST"))
                     )
                     val hasTimestamps = Regex("""\[\d{2}:\d{2}""").containsMatchIn(value)
@@ -452,14 +523,31 @@ object AudioLyricsExtractor {
                         val cleaned = cleanExtractedLyrics(value)
                         if (cleaned.isNotBlank() && !isCorruptedLyrics(cleaned)) {
                             // Prioridad a letras sincronizadas/LRC con marcas de tiempo
-                            if (hasTimestamps) return cleaned
+                            if (hasTimestamps) {
+                                return LyricsResult(lyrics = cleaned, isSynced = true, source = "${sourceLabel}_$key")
+                            }
                             if (candidateLyrics == null) candidateLyrics = cleaned
+                        }
+                    } else if ((key == "COMMENT" || key == "DESCRIPTION" || key == "NOTES" || key == "SUBTITLE") && !isCorruptedLyrics(value)) {
+                        // En algunos ripeos o descargas, las letras se guardan en el comentario
+                        if (value.lines().count { it.isNotBlank() } >= 3 || hasTimestamps) {
+                            val cleaned = cleanExtractedLyrics(value)
+                            if (cleaned.isNotBlank() && !isCorruptedLyrics(cleaned)) {
+                                if (hasTimestamps) {
+                                    return LyricsResult(lyrics = cleaned, isSynced = true, source = "${sourceLabel}_$key")
+                                }
+                                if (candidateLyrics == null) candidateLyrics = cleaned
+                            }
                         }
                     }
                 }
             }
         }
-        return candidateLyrics
+
+        return if (!candidateLyrics.isNullOrBlank()) {
+            val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(candidateLyrics)
+            LyricsResult(lyrics = candidateLyrics, isSynced = isSynced, source = sourceLabel)
+        } else null
     }
 
     /**
@@ -856,29 +944,59 @@ object AudioLyricsExtractor {
         }
     }
 
-    private fun checkAdjacentLyricsFile(audioPath: String?): String? {
-        if (audioPath == null) return null
+    fun checkAdjacentLyricsFile(audioPath: String?): String? {
+        if (audioPath.isNullOrBlank()) return null
         val audioFile = File(audioPath)
         val parentDir = audioFile.parentFile ?: return null
         val baseName = audioFile.nameWithoutExtension
+        val fullName = audioFile.name
         val extensions = listOf("lrc", "txt", "srt", "vtt")
 
-        // Buscar en la misma carpeta y en subcarpeta Lyrics/ o lrc/
-        val candidateDirs = listOf(parentDir, File(parentDir, "Lyrics"), File(parentDir, "lyrics"), File(parentDir, "LRC"))
+        // Buscar en la misma carpeta y en subcarpetas comunes
+        val candidateDirs = listOf(
+            parentDir,
+            File(parentDir, "Lyrics"),
+            File(parentDir, "lyrics"),
+            File(parentDir, "LRC"),
+            File(parentDir, "lrc")
+        )
+
+        // Candidatos de nombre: baseName ("song") y fullName ("song.opus" -> "song.opus.lrc" típico de yt-dlp)
+        val candidateNames = if (baseName != fullName) listOf(baseName, fullName) else listOf(baseName)
 
         for (dir in candidateDirs) {
             if (!dir.exists() || !dir.isDirectory) continue
-            for (ext in extensions) {
-                val candidate = File(dir, "$baseName.$ext")
-                if (candidate.exists() && candidate.canRead()) {
-                    val bytes = try { candidate.readBytes() } catch (e: Exception) { null }
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        val decoded = decodeTextSmart(bytes)
-                        if (decoded.isNotBlank()) {
-                            return if (ext == "srt" || ext == "vtt") {
-                                convertSubtitleToLrc(decoded)
-                            } else {
-                                decoded
+
+            // 1. Coincidencia directa rápida
+            for (name in candidateNames) {
+                for (ext in extensions) {
+                    val candidate = File(dir, "$name.$ext")
+                    if (candidate.exists() && candidate.canRead()) {
+                        val bytes = try { candidate.readBytes() } catch (_: Exception) { null }
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            val decoded = decodeTextSmart(bytes)
+                            if (decoded.isNotBlank()) {
+                                return if (ext == "srt" || ext == "vtt") convertSubtitleToLrc(decoded) else decoded
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Coincidencia insensible a mayúsculas/minúsculas en el directorio
+            val filesInDir = try { dir.listFiles() } catch (_: Exception) { null }
+            if (filesInDir != null) {
+                for (name in candidateNames) {
+                    for (ext in extensions) {
+                        val targetLower = "$name.$ext".lowercase()
+                        val match = filesInDir.firstOrNull { it.name.lowercase() == targetLower && it.canRead() }
+                        if (match != null) {
+                            val bytes = try { match.readBytes() } catch (_: Exception) { null }
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                val decoded = decodeTextSmart(bytes)
+                                if (decoded.isNotBlank()) {
+                                    return if (ext == "srt" || ext == "vtt") convertSubtitleToLrc(decoded) else decoded
+                                }
                             }
                         }
                     }
@@ -994,111 +1112,192 @@ object AudioLyricsExtractor {
         }
     }
 
-    private fun getOpusLyricsDeepScan(filePath: String): LyricsResult? {
+    fun extractOpusOrOggLyrics(context: Context, audioUri: Uri, audioFilePath: String?): LyricsResult? {
+        var inputStream: InputStream? = null
         try {
-            val file = File(filePath)
-            if (!file.exists()) return null
+            if (!audioFilePath.isNullOrBlank()) {
+                val f = File(audioFilePath)
+                if (f.exists() && f.canRead()) {
+                    inputStream = FileInputStream(f)
+                }
+            }
+            if (inputStream == null && audioUri != Uri.EMPTY) {
+                try {
+                    inputStream = context.contentResolver.openInputStream(audioUri)
+                } catch (_: Exception) {}
+            }
+            if (inputStream == null) return null
 
-            val inputStream = file.inputStream()
-            val buffer = ByteArray(5 * 1024 * 1024)
-            val bytesRead = inputStream.read(buffer)
-            inputStream.close()
-
-            if (bytesRead < 27) return null
-
-            val packetData = ByteArrayOutputStream()
-            var offset = 0
-            var capturingTags = false
-
-            while (offset < bytesRead - 27) {
-                if (buffer[offset] == 'O'.code.toByte() && buffer[offset+1] == 'g'.code.toByte() &&
-                    buffer[offset+2] == 'g'.code.toByte() && buffer[offset+3] == 'S'.code.toByte()) {
-
-                    val segments = buffer[offset + 26].toInt() and 0xFF
-                    val segmentTableOffset = offset + 27
-                    var pageDataOffset = segmentTableOffset + segments
-
-                    if (pageDataOffset > bytesRead) break
-
-                    for (i in 0 until segments) {
-                        if (segmentTableOffset + i >= bytesRead) break
-                        val segmentLength = buffer[segmentTableOffset + i].toInt() and 0xFF
-                        if (pageDataOffset + segmentLength > bytesRead) break
-
-                        if (segmentLength >= 8 &&
-                            buffer[pageDataOffset] == 'O'.code.toByte() &&
-                            buffer[pageDataOffset+1] == 'p'.code.toByte() &&
-                            buffer[pageDataOffset+2] == 'u'.code.toByte() &&
-                            buffer[pageDataOffset+3] == 's'.code.toByte() &&
-                            buffer[pageDataOffset+4] == 'T'.code.toByte() &&
-                            buffer[pageDataOffset+5] == 'a'.code.toByte() &&
-                            buffer[pageDataOffset+6] == 'g'.code.toByte() &&
-                            buffer[pageDataOffset+7] == 's'.code.toByte()) {
-                            capturingTags = true
-                        }
-
-                        if (capturingTags) {
-                            packetData.write(buffer, pageDataOffset, segmentLength)
-                            if (segmentLength < 255) {
-                                offset = bytesRead
-                                break
-                            }
-                        }
-                        pageDataOffset += segmentLength
-                    }
-                    if (offset == bytesRead) break
-                    offset = pageDataOffset
-                } else {
-                    offset++
+            // Leemos hasta 4MB para capturar cabeceras de Vorbis / Opus completas
+            val maxHeaderBytes = 4 * 1024 * 1024
+            val buffer = ByteArray(maxHeaderBytes)
+            var totalRead = 0
+            inputStream.use { input ->
+                while (totalRead < maxHeaderBytes) {
+                    val r = input.read(buffer, totalRead, maxHeaderBytes - totalRead)
+                    if (r <= 0) break
+                    totalRead += r
                 }
             }
 
-            if (packetData.size() > 8) {
-                val packetBytes = packetData.toByteArray()
-                var pOffset = 8 // Skip "OpusTags"
+            if (totalRead < 16) return null
+            val headerBytes = if (totalRead == maxHeaderBytes) buffer else buffer.copyOfRange(0, totalRead)
 
-                fun readInt32LE(bytes: ByteArray, idx: Int): Int {
-                    if (idx + 3 >= bytes.size) return 0
-                    return (bytes[idx].toInt() and 0xFF) or
-                           ((bytes[idx+1].toInt() and 0xFF) shl 8) or
-                           ((bytes[idx+2].toInt() and 0xFF) shl 16) or
-                           ((bytes[idx+3].toInt() and 0xFF) shl 24)
-                }
-
-                val vendorLen = readInt32LE(packetBytes, pOffset)
-                pOffset += 4 + vendorLen
-                if (pOffset < packetBytes.size) {
-                    val commentListLen = readInt32LE(packetBytes, pOffset)
-                    pOffset += 4
-
-                    for (i in 0 until commentListLen) {
-                        if (pOffset + 4 > packetBytes.size) break
-                        val commentLen = readInt32LE(packetBytes, pOffset)
-                        pOffset += 4
-
-                        if (pOffset + commentLen > packetBytes.size) break
-                        val commentBytes = packetBytes.copyOfRange(pOffset, pOffset + commentLen)
-                        val commentStr = decodeTextSmart(commentBytes)
-                        pOffset += commentLen
-
-                        val lower = commentStr.lowercase()
-                        val isBlacklisted = lower.contains("lyricist") || lower.contains("author") || lower.contains("url") ||
-                            lower.contains("site") || lower.contains("id") || lower.contains("copyright")
-                        if (!isBlacklisted && (lower.startsWith("lyrics=") || lower.startsWith("sylt=") || lower.startsWith("uslt=") ||
-                            lower.startsWith("unsyncedlyrics=") || lower.startsWith("syncedlyrics=") || lower.startsWith("lrc="))) {
-                            val content = commentStr.substring(commentStr.indexOf('=') + 1).trim()
-                            val clean = cleanExtractedLyrics(content)
-                            if (clean.isNotBlank() && !isCorruptedLyrics(clean)) {
-                                val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(clean)
-                                return LyricsResult(lyrics = clean, isSynced = isSynced, source = "OPUS_TAGS_PARSER")
-                            }
-                        }
-                    }
-                }
-            }
+            return parseOggOpusBytes(headerBytes)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.d(TAG, "extractOpusOrOggLyrics error: ${e.message}")
+        } finally {
+            try { inputStream?.close() } catch (_: Exception) {}
         }
+        return null
+    }
+
+    fun parseOggOpusBytes(bytes: ByteArray): LyricsResult? {
+        if (bytes.size < 16) return null
+
+        // 1. Si el archivo Opus tiene una cabecera ID3v2 antepuesta (común en yt-dlp / ffmpeg)
+        if (bytes.size >= 10 && bytes[0] == 0x49.toByte() && bytes[1] == 0x44.toByte() && bytes[2] == 0x33.toByte()) {
+            val id3Result = parseId3v2Bytes(bytes)
+            if (id3Result != null && !id3Result.lyrics.isNullOrBlank() && !isCorruptedLyrics(id3Result.lyrics)) {
+                return id3Result
+            }
+        }
+
+        // 2. Extraer y reensamblar paquetes Ogg (OpusTags / VorbisComment) a través de las páginas OggS
+        val pageResult = parseOggPackets(bytes)
+        if (pageResult != null && !pageResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(pageResult.lyrics)) {
+            return pageResult
+        }
+
+        // 3. Fallback: Escaneo heurístico en búfer para marcadores OpusTags / VorbisComment
+        val bufferScanResult = scanBufferForVorbisOrOpusLyrics(bytes)
+        if (bufferScanResult != null && !bufferScanResult.lyrics.isNullOrBlank() && !isCorruptedLyrics(bufferScanResult.lyrics)) {
+            return bufferScanResult
+        }
+
+        return null
+    }
+
+    private fun parseOggPackets(bytes: ByteArray): LyricsResult? {
+        var offset = 0
+        // Saltar cabecera ID3v2 si está presente para llegar al primer OggS
+        if (bytes.size >= 10 && bytes[0] == 0x49.toByte() && bytes[1] == 0x44.toByte() && bytes[2] == 0x33.toByte()) {
+            val tagSize = ((bytes[6].toInt() and 0x7F) shl 21) or
+                          ((bytes[7].toInt() and 0x7F) shl 14) or
+                          ((bytes[8].toInt() and 0x7F) shl 7) or
+                          (bytes[9].toInt() and 0x7F)
+            val id3End = 10 + tagSize
+            if (id3End < bytes.size - 27) {
+                offset = id3End
+            }
+        }
+
+        val packetStream = ByteArrayOutputStream()
+        var targetPacketFound = false
+
+        while (offset <= bytes.size - 27) {
+            // Buscar "OggS"
+            if (bytes[offset] != 'O'.code.toByte() ||
+                bytes[offset + 1] != 'g'.code.toByte() ||
+                bytes[offset + 2] != 'g'.code.toByte() ||
+                bytes[offset + 3] != 'S'.code.toByte()) {
+                offset++
+                continue
+            }
+
+            val segmentsCount = bytes[offset + 26].toInt() and 0xFF
+            val segTableOffset = offset + 27
+
+            if (segTableOffset + segmentsCount > bytes.size) break
+
+            var pageDataOffset = segTableOffset + segmentsCount
+            var segTableIdx = 0
+
+            while (segTableIdx < segmentsCount) {
+                val segLen = bytes[segTableOffset + segTableIdx].toInt() and 0xFF
+                if (pageDataOffset + segLen > bytes.size) break
+
+                if (!targetPacketFound) {
+                    if (segLen >= 8 &&
+                        bytes[pageDataOffset] == 'O'.code.toByte() &&
+                        bytes[pageDataOffset + 1] == 'p'.code.toByte() &&
+                        bytes[pageDataOffset + 2] == 'u'.code.toByte() &&
+                        bytes[pageDataOffset + 3] == 's'.code.toByte() &&
+                        bytes[pageDataOffset + 4] == 'T'.code.toByte() &&
+                        bytes[pageDataOffset + 5] == 'a'.code.toByte() &&
+                        bytes[pageDataOffset + 6] == 'g'.code.toByte() &&
+                        bytes[pageDataOffset + 7] == 's'.code.toByte()) {
+                        targetPacketFound = true
+                        packetStream.reset()
+                    } else if (segLen >= 7 &&
+                        bytes[pageDataOffset] == 3.toByte() &&
+                        bytes[pageDataOffset + 1] == 'v'.code.toByte() &&
+                        bytes[pageDataOffset + 2] == 'o'.code.toByte() &&
+                        bytes[pageDataOffset + 3] == 'r'.code.toByte() &&
+                        bytes[pageDataOffset + 4] == 'b'.code.toByte() &&
+                        bytes[pageDataOffset + 5] == 'i'.code.toByte() &&
+                        bytes[pageDataOffset + 6] == 's'.code.toByte()) {
+                        targetPacketFound = true
+                        packetStream.reset()
+                    }
+                }
+
+                if (targetPacketFound) {
+                    packetStream.write(bytes, pageDataOffset, segLen)
+
+                    if (segLen < 255) {
+                        val packetBytes = packetStream.toByteArray()
+                        val result = parseVorbisCommentBlockToResult(packetBytes, "OGG_OPUS_TAGS")
+                        if (result != null && !result.lyrics.isNullOrBlank() && !isCorruptedLyrics(result.lyrics)) {
+                            return result
+                        }
+                        targetPacketFound = false
+                        packetStream.reset()
+                    }
+                }
+
+                pageDataOffset += segLen
+                segTableIdx++
+            }
+
+            offset = pageDataOffset
+        }
+
+        if (targetPacketFound && packetStream.size() > 8) {
+            val packetBytes = packetStream.toByteArray()
+            val result = parseVorbisCommentBlockToResult(packetBytes, "OGG_OPUS_TAGS")
+            if (result != null && !result.lyrics.isNullOrBlank() && !isCorruptedLyrics(result.lyrics)) {
+                return result
+            }
+        }
+
+        return null
+    }
+
+    private fun scanBufferForVorbisOrOpusLyrics(bytes: ByteArray): LyricsResult? {
+        val opusMagic = "OpusTags".toByteArray(Charsets.US_ASCII)
+        var idx = 0
+        while (idx < bytes.size - opusMagic.size - 8) {
+            if (bytes[idx] == opusMagic[0] && bytes[idx+1] == opusMagic[1] &&
+                bytes[idx+2] == opusMagic[2] && bytes[idx+3] == opusMagic[3] &&
+                bytes[idx+4] == opusMagic[4] && bytes[idx+5] == opusMagic[5] &&
+                bytes[idx+6] == opusMagic[6] && bytes[idx+7] == opusMagic[7]) {
+                val slice = bytes.copyOfRange(idx, bytes.size)
+                val res = parseVorbisCommentBlockToResult(slice, "OPUS_BUFFER_MAGIC")
+                if (res != null && !res.lyrics.isNullOrBlank() && !isCorruptedLyrics(res.lyrics)) {
+                    return res
+                }
+            }
+            idx++
+        }
+
+        // Búsqueda de tags explícitos en texto bruto en el búfer
+        val rawLrc = scanBufferForLrc(bytes)
+        if (!rawLrc.isNullOrBlank() && !isCorruptedLyrics(rawLrc)) {
+            val isSynced = Regex("\\[\\d{2}:\\d{2}(?:[.:]\\d{1,3})?\\]").containsMatchIn(rawLrc)
+            return LyricsResult(lyrics = rawLrc, isSynced = isSynced, source = "OPUS_BUFFER_LRC_SCAN")
+        }
+
         return null
     }
 
@@ -1274,6 +1473,14 @@ object AudioLyricsExtractor {
             "Description: ", "Description=", "Description: ;", "Description=;", "Description:",
             "Comment: ", "Comment=", "Comments: ", "Comments=",
             "Language: eng", "Language: spa", "Language: xxx", "Language: und",
+            "UNSYNCED LYRICS=", "UNSYNCED LYRICS: ", "UNSYNCED LYRICS:",
+            "SYNCED LYRICS=", "SYNCED LYRICS: ", "SYNCED LYRICS:",
+            "UNSYNCEDLYRICS=", "UNSYNCEDLYRICS: ", "UNSYNCEDLYRICS:",
+            "SYNCEDLYRICS=", "SYNCEDLYRICS: ", "SYNCEDLYRICS:",
+            "LYRICS_SYNCED=", "LYRICS_SYNCED: ", "LYRICS_SYNCED:",
+            "LRC=", "LRC: ", "LRC:",
+            "USLT=", "USLT: ", "USLT:",
+            "SYLT=", "SYLT: ", "SYLT:",
             "Lyrics: ", "Lyric: ", "Lyrics=", "Lyric=", "Text: ", "Text="
         )
         var changed = true

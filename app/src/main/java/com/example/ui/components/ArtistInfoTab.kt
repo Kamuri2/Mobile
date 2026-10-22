@@ -150,7 +150,7 @@ fun ArtistInfoCard(
             profile = com.example.data.ArtistProfile(
                 name = fallbackName,
                 isPrimary = true,
-                info = ArtistInfo(imageUrl = null, bio = null, followers = "", listeners = "", origin = "")
+                info = ArtistInfo(imageUrl = null, bio = "", followers = "", listeners = "", origin = "")
             ),
             language = language,
             modifier = modifier,

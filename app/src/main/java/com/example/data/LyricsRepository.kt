@@ -147,6 +147,14 @@ class LyricsRepository(private val dao: LyricsDao) {
                     return@withContext cleanPreloaded
                 }
             }
+        } else {
+            // Limpieza forzada de cachés para reintento de lectura sin datos residuales
+            memCache.remove(path)
+            memCache.remove(uriStr)
+            try {
+                dao.deleteByPath(path)
+                if (uriStr != path) dao.deleteByPath(uriStr)
+            } catch (_: Exception) {}
         }
 
         // 3) Motor unificado multietapa vía AudioLyricsExtractor
@@ -161,6 +169,16 @@ class LyricsRepository(private val dao: LyricsDao) {
         var rawLyrics = extractedResult.lyrics
 
         // 4) Fallbacks complementarios si la extracción directa no arrojó resultados
+        val isOpus = track.path.endsWith(".opus", true) ||
+            (track.contentUri != Uri.EMPTY && try { context.contentResolver.getType(track.contentUri)?.contains("opus", true) == true } catch (_: Exception) { false })
+
+        if ((rawLyrics.isNullOrBlank() || AudioLyricsExtractor.isCorruptedLyrics(rawLyrics)) && isOpus) {
+            val opusRes = AudioLyricsExtractor.extractOpusOrOggLyrics(context, track.contentUri, track.path.takeIf { it.isNotBlank() && !it.startsWith("content://") })
+            if (opusRes != null && !opusRes.lyrics.isNullOrBlank()) {
+                rawLyrics = opusRes.lyrics
+            }
+        }
+
         if ((rawLyrics.isNullOrBlank() || AudioLyricsExtractor.isCorruptedLyrics(rawLyrics)) && track.path.isNotBlank() && !track.path.startsWith("content://")) {
             val file = File(track.path)
             rawLyrics = readLyricsFromTag(file)
@@ -202,6 +220,10 @@ class LyricsRepository(private val dao: LyricsDao) {
     private fun readLyricsFromTag(file: File): String? {
         return try {
             if (!file.exists() || file.length() == 0L) return null
+            if (file.name.endsWith(".opus", true) || file.name.endsWith(".ogg", true)) {
+                val res = AudioLyricsExtractor.parseOggOpusBytes(file.readBytes())
+                return res?.lyrics
+            }
             val audio = AudioFileIO.read(file)
             extractTagLyrics(audio.tag)
         } catch (e: Exception) {
@@ -210,11 +232,21 @@ class LyricsRepository(private val dao: LyricsDao) {
     }
 
     private fun readLyricsFromUri(context: Context, uri: Uri, fallbackPath: String?): String? {
+        val isOpusUri = fallbackPath?.endsWith(".opus", true) == true ||
+            try { context.contentResolver.getType(uri)?.contains("opus", true) == true } catch (_: Exception) { false }
+        if (isOpusUri) {
+            val res = AudioLyricsExtractor.extractOpusOrOggLyrics(context, uri, fallbackPath)
+            if (res != null && !res.lyrics.isNullOrBlank()) return res.lyrics
+        }
         var tempFile: File? = null
         return try {
             val ext = when {
                 !fallbackPath.isNullOrBlank() && fallbackPath.contains(".") -> "." + fallbackPath.substringAfterLast(".").lowercase()
                 else -> ".mp3"
+            }
+            if (ext == ".opus") {
+                val res = AudioLyricsExtractor.extractOpusOrOggLyrics(context, uri, fallbackPath)
+                return res?.lyrics
             }
             tempFile = File.createTempFile("lyrics_scan_", ext, context.cacheDir)
             context.contentResolver.openInputStream(uri)?.use { input ->
@@ -403,18 +435,11 @@ class LyricsRepository(private val dao: LyricsDao) {
     }
 
     private fun readAdjacentLrc(filePath: String): String? {
-        return try {
-            val audioFile = File(filePath)
-            val parent = audioFile.parentFile ?: return null
-            val baseName = audioFile.nameWithoutExtension
-            val lrcFile = File(parent, "$baseName.lrc")
-            if (lrcFile.exists() && lrcFile.canRead()) {
-                val text = lrcFile.readText(Charsets.UTF_8).trim()
-                if (text.isNotBlank() && !AudioLyricsExtractor.isCorruptedLyrics(text)) AudioLyricsExtractor.cleanExtractedLyrics(text) else null
-            } else null
-        } catch (e: Exception) {
-            null
+        val adjacent = AudioLyricsExtractor.checkAdjacentLyricsFile(filePath)
+        if (!adjacent.isNullOrBlank() && !AudioLyricsExtractor.isCorruptedLyrics(adjacent)) {
+            return AudioLyricsExtractor.cleanExtractedLyrics(adjacent)
         }
+        return null
     }
 
     private fun cleanExtractedLyrics(raw: String): String {

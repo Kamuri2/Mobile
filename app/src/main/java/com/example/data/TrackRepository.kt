@@ -99,35 +99,33 @@ object TrackRepository {
                     } catch (e: Exception) {}
                 }
 
-                // Progressive background enrichment for tracks lacking tags/lyrics/artwork
-                val tracksToEnrich = mergedList.filter { track ->
-                    forceRescan || (track.genre.isBlank() && track.bitrate.isBlank()) || isArtworkMissingOrCorrupt(context, track)
-                }.take(if (forceRescan) 200 else 40)
+                // Sección 2: Enriquecimiento ligero y escalonado en segundo plano (sin saturar memoria)
+                // Se procesan únicamente portadas faltantes de forma espaciada (delay 150ms)
+                val tracksNeedingArt = mergedList.filter { track ->
+                    isArtworkMissingOrCorrupt(context, track)
+                }.take(20)
 
-                if (tracksToEnrich.isNotEmpty()) {
+                if (tracksNeedingArt.isNotEmpty()) {
                     scope.launch {
+                        kotlinx.coroutines.delay(1000L) // Dar prioridad a que la UI cargue la música primero
                         val albumUriMap = mutableMapOf<String, android.net.Uri?>()
                         val enrichedBatch = mutableListOf<TrackEntity>()
-                        for (track in tracksToEnrich) {
+                        for (track in tracksNeedingArt) {
                             if (!isActive) break
                             try {
-                                var enriched = MetadataReader.extractFullMetadata(context, track)
-                                val albumKey = AlbumArtExtractor.getAlbumKey(enriched)
+                                val albumKey = AlbumArtExtractor.getAlbumKey(track)
                                 val thumbUri = if (albumKey != null && albumUriMap.containsKey(albumKey)) {
                                     albumUriMap[albumKey]
                                 } else {
-                                    val uri = ArtworkExtractor.saveArtworkToInternalCache(context, enriched)
+                                    val uri = ArtworkExtractor.saveArtworkToInternalCache(context, track)
                                     if (albumKey != null) albumUriMap[albumKey] = uri
                                     uri
                                 }
                                 if (thumbUri != null) {
-                                    enriched = enriched.copy(albumArtUri = thumbUri)
+                                    val enriched = track.copy(albumArtUri = thumbUri)
+                                    enrichedBatch.add(TrackEntity.fromTrack(enriched))
                                 }
-                                enrichedBatch.add(TrackEntity.fromTrack(enriched))
-                                if (enrichedBatch.size >= 10) {
-                                    db.trackDao().insertOrUpdateTracks(enrichedBatch.toList())
-                                    enrichedBatch.clear()
-                                }
+                                kotlinx.coroutines.delay(150L) // Ceder CPU y memoria para fluidez total
                             } catch (_: Exception) {}
                         }
                         if (enrichedBatch.isNotEmpty()) {

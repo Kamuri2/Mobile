@@ -212,6 +212,9 @@ fun PlayerScreen(
         isClosingByGesture = false
     }
 
+    val context = LocalContext.current
+    val playerManager = remember { AudioPlayerManager.getInstance(context) }
+
     val trackId = currentTrack?.id ?: -1L
     var oldTrackId by remember { mutableStateOf(-1L) }
     var slideDirection by remember { mutableStateOf(1) }
@@ -223,12 +226,15 @@ fun PlayerScreen(
             skipTrigger++
         }
         oldTrackId = trackId
+        currentTrack?.let { track ->
+            if (track.lyrics.isBlank() || com.example.data.AudioLyricsExtractor.isCorruptedLyrics(track.lyrics)) {
+                playerManager.loadLyricsForTrack(track, forceRescan = false)
+            }
+        }
     }
 
     var showAddToPlaylistModal by remember { mutableStateOf(false) }
     
-    val context = LocalContext.current
-    val playerManager = remember { AudioPlayerManager.getInstance(context) }
     val pipelineArtistInfo by playerManager.currentArtistInfo.collectAsState()
     val pipelineArtistProfiles by playerManager.currentArtistProfiles.collectAsState()
     val isArtistLoading by playerManager.isArtistInfoLoading.collectAsState()
@@ -655,7 +661,7 @@ fun PlayerScreen(
                                 language = settings.appLanguage,
                                 onSeek = onSeek,
                                 onRetry = {
-                                    currentTrack?.let { AudioPlayerManager.getInstance(context).loadLyricsForTrack(it, forceRescan = true) }
+                                    currentTrack?.let { AudioPlayerManager.getInstance(context).retryScanTrackExtras(it) }
                                 },
                                 modifier = Modifier.weight(1f).fillMaxWidth()
                             )
@@ -916,7 +922,7 @@ fun PlayerScreen(
                                         language = settings.appLanguage,
                                         onSeek = onSeek,
                                         onRetry = {
-                                            targetTrack?.let { AudioPlayerManager.getInstance(context).loadLyricsForTrack(it, forceRescan = true) }
+                                            targetTrack?.let { AudioPlayerManager.getInstance(context).retryScanTrackExtras(it) }
                                         },
                                         modifier = Modifier
                                             .fillMaxSize()
@@ -1008,7 +1014,7 @@ fun PlayerScreen(
                     }
                 }
 
-                // When in album art mode, show single line snippet and centered title/artist
+                // When in album art mode, show centered title/artist and live lyric snippet below
                 androidx.compose.animation.AnimatedVisibility(
                     visible = !showLyricsMode,
                     enter = fadeIn(animationSpec = tween(220)) + expandVertically(
@@ -1018,39 +1024,79 @@ fun PlayerScreen(
                         animationSpec = spring(dampingRatio = 0.68f, stiffness = 320f)
                     )
                 ) {
-                    val hasLyrics = parsedLyrics.isNotEmpty() || (currentTrack?.lyrics?.isNotBlank() == true)
-                    val lyricsSectionTopMargin = (totalScreenHeight * 0.010f).coerceIn(4.dp, 8.dp)
-
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
                     ) {
-                        // Balanced spacing centering the lyrics space exactly between cover and song title
-                        val totalGap = 18.dp + (totalScreenHeight * 0.04f)
-                        val halfGap = totalGap / 2
+                        // Breathing space between cover and current playing lyric
+                        Spacer(modifier = Modifier.height(14.dp))
 
-                        Spacer(modifier = Modifier.height(halfGap))
+                        // Currently playing lyric placed in the middle (between cover and title) matching user reference
+                        val activeLyricLine = remember(parsedLyrics, currentPositionMs, currentTrack?.lyrics, durationMs) {
+                            if (parsedLyrics.isNotEmpty()) {
+                                val idx = parsedLyrics.indexOfLast { it.timestampMs <= currentPositionMs }
+                                if (idx != -1) parsedLyrics[idx].text.trim() else parsedLyrics.firstOrNull()?.text?.trim()
+                            } else {
+                                val raw = currentTrack?.lyrics ?: ""
+                                if (raw.isNotBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(raw)) {
+                                    val cleaned = com.example.data.AudioLyricsExtractor.cleanExtractedLyrics(raw)
+                                    val lines = cleaned.lines().map { it.trim() }.filter { line ->
+                                        line.isNotBlank() &&
+                                        !line.startsWith("[") &&
+                                        !line.matches(Regex("""(?i)^\s*(?:ti|ar|al|by|offset|re|ve|length|id|artist|album|title)\s*:.*"""))
+                                    }
+                                    if (lines.isNotEmpty()) {
+                                        val fraction = if (durationMs > 0L) (currentPositionMs.toFloat() / durationMs).coerceIn(0f, 0.99f) else 0f
+                                        val idx = (fraction * lines.size).toInt().coerceIn(0, lines.lastIndex)
+                                        lines[idx]
+                                    } else null
+                                } else null
+                            }
+                        }
 
-                        // Dedicated synchronized lyrics space in playback, centered vertically
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(32.dp),
+                                .heightIn(min = 28.dp)
+                                .clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null
+                                ) { showLyricsMode = true },
                             contentAlignment = Alignment.Center
                         ) {
-                            LiveSyncedLyricSnippet(
-                                parsedLyrics = parsedLyrics,
-                                rawLyrics = currentTrack?.lyrics ?: "",
-                                currentPositionMs = currentPositionMs,
-                                durationMs = durationMs,
-                                onClick = { showLyricsMode = true },
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            AnimatedContent(
+                                targetState = activeLyricLine,
+                                transitionSpec = {
+                                    (slideInVertically { h -> h / 2 } + fadeIn())
+                                        .togetherWith(slideOutVertically { h -> -h / 2 } + fadeOut())
+                                },
+                                label = "MiddleLiveLyricSnippet"
+                            ) { lyricText ->
+                                if (!lyricText.isNullOrBlank()) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center,
+                                        modifier = Modifier.padding(horizontal = 20.dp)
+                                    ) {
+                                        Text(
+                                            text = lyricText,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = primaryTextColor.copy(alpha = 0.92f),
+                                            textAlign = TextAlign.Center,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                } else {
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                }
+                            }
                         }
 
-                        Spacer(modifier = Modifier.height(halfGap))
+                        Spacer(modifier = Modifier.height(10.dp))
 
                         val noTrackText = com.example.ui.Translations.get(settings.appLanguage, "no_track_playing")
                         val unknownArtistText = com.example.ui.Translations.get(settings.appLanguage, "unknown_artist")
@@ -1065,7 +1111,7 @@ fun PlayerScreen(
                             overflow = TextOverflow.Ellipsis
                         )
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
 
                         Text(
                             text = currentTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: unknownArtistText,
@@ -1157,12 +1203,13 @@ fun PlayerScreen(
                 // Generous breathing space between seekbar and playback controls
                 Spacer(modifier = Modifier.height(26.dp))
 
-                // Playback Controls Row (Heart on the left, Queue on the right)
+                // Playback Controls Row matching reference image:
+                // [Heart] [FastRewind <<] [Pause || / Play >] [FastForward >>] [Menu =]
                 val controlsBtnColor = if (isDarkMode) Color.White else Color.Black
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
+                        .padding(horizontal = 24.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1181,7 +1228,7 @@ fun PlayerScreen(
                         )
                     }
 
-                    // 2. Previous (Double triangle ◀◀ - FastRewind)
+                    // 2. Previous Track (FastRewind << double-triangle left)
                     IconButton(
                         onClick = { slideDirection = -1; skipTrigger++; onPrevious() },
                         modifier = Modifier
@@ -1192,11 +1239,11 @@ fun PlayerScreen(
                             imageVector = Icons.Default.FastRewind,
                             contentDescription = "Previous",
                             tint = controlsBtnColor,
-                            modifier = Modifier.size(42.dp)
+                            modifier = Modifier.size(40.dp)
                         )
                     }
 
-                    // 3. Play / Pause Button (White in dark mode, Black in light mode, NO circle)
+                    // 3. Play / Pause Button (Clean white pause bars || or play triangle > with NO circle or border)
                     IconButton(
                         onClick = onPlayPauseToggle,
                         modifier = Modifier
@@ -1207,11 +1254,11 @@ fun PlayerScreen(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = "Play/Pause",
                             tint = controlsBtnColor,
-                            modifier = Modifier.size(56.dp)
+                            modifier = Modifier.size(54.dp)
                         )
                     }
 
-                    // 4. Next (Double triangle ▶▶ - FastForward)
+                    // 4. Next Track (FastForward >> double-triangle right)
                     IconButton(
                         onClick = { slideDirection = 1; skipTrigger++; onNext() },
                         modifier = Modifier
@@ -1222,11 +1269,11 @@ fun PlayerScreen(
                             imageVector = Icons.Default.FastForward,
                             contentDescription = "Next",
                             tint = controlsBtnColor,
-                            modifier = Modifier.size(42.dp)
+                            modifier = Modifier.size(40.dp)
                         )
                     }
 
-                    // 5. Menu / Queue (Right)
+                    // 5. Menu / Queue (Right - three horizontal bars)
                     IconButton(
                         onClick = onOpenQueue,
                         modifier = Modifier
@@ -1243,8 +1290,8 @@ fun PlayerScreen(
                 }
             } // End of Column with player content
 
-                // Artist Info Card placed directly below playback controls
-                Spacer(modifier = Modifier.height(30.dp))
+                // Artist Info Card placed at bottom separated generously from controls
+                Spacer(modifier = Modifier.height(64.dp))
 
                 if (currentTrack != null) {
                     ArtistInfoCard(
@@ -1504,9 +1551,165 @@ fun LiveSyncedLyricSnippet(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-        } else {
-            // Reserve space for lyrics when playing without placeholder text pill
-            Spacer(modifier = Modifier.fillMaxSize())
+        }
+    }
+}
+
+@Composable
+fun NowPlayingLyricsCard(
+    track: Track,
+    parsedLyrics: List<com.example.model.LyricsLine>,
+    currentPositionMs: Long,
+    language: String,
+    onExpandLyrics: () -> Unit,
+    onRetryLyrics: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val cardBg = if (isLightMode) Color(0x0C000000) else Color(0x18FFFFFF)
+    val cardBorder = if (isLightMode) Color(0x14000000) else Color(0x22FFFFFF)
+    val primaryText = if (isLightMode) Color(0xFF111111) else Color.White
+    val secondaryText = if (isLightMode) Color(0xFF555555) else Color.White.copy(alpha = 0.65f)
+
+    val raw = track.lyrics
+    val hasLyrics = parsedLyrics.isNotEmpty() || (raw.isNotBlank() && !com.example.data.AudioLyricsExtractor.isCorruptedLyrics(raw))
+
+    Card(
+        modifier = modifier
+            .clip(RoundedCornerShape(22.dp))
+            .clickable { onExpandLyrics() },
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(1.dp, cardBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
+            // Header: "Lyrics" title and Actions (Retry + Expand)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = com.example.ui.Translations.get(language, "lyrics"),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = primaryText
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Retry / re-scan button
+                    IconButton(
+                        onClick = onRetryLyrics,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Retry lyrics scan",
+                            tint = secondaryText,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    // Expand button
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+                            .clickable { onExpandLyrics() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = com.example.ui.Translations.get(language, "song_lyrics_title"),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            if (hasLyrics) {
+                if (parsedLyrics.isNotEmpty()) {
+                    val activeIndex = parsedLyrics.indexOfLast { it.timestampMs <= currentPositionMs }.coerceAtLeast(0)
+                    val startIdx = (activeIndex - 1).coerceAtLeast(0)
+                    val endIdx = (activeIndex + 2).coerceAtMost(parsedLyrics.size)
+                    val displayLines = parsedLyrics.subList(startIdx, endIdx)
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        for ((offset, line) in displayLines.withIndex()) {
+                            val actualIndex = startIdx + offset
+                            val isActive = actualIndex == activeIndex
+                            Text(
+                                text = line.text,
+                                fontSize = if (isActive) 16.sp else 14.sp,
+                                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isActive) MaterialTheme.colorScheme.primary else secondaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                } else {
+                    val lines = raw.lines().map { it.trim() }.filter { it.isNotBlank() }.take(3)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        for (line in lines) {
+                            Text(
+                                text = line,
+                                fontSize = 14.sp,
+                                color = secondaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = com.example.ui.Translations.get(language, "no_embedded_lyrics"),
+                        fontSize = 13.sp,
+                        color = secondaryText,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onRetryLyrics) {
+                        Text(
+                            text = com.example.ui.Translations.get(language, "rescan_audio"),
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
         }
     }
 }

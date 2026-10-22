@@ -5,16 +5,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.googlefonts.Font as GoogleFontCompose
-import androidx.compose.ui.text.googlefonts.GoogleFont
 import androidx.compose.ui.unit.sp
 import com.example.R
-
-val provider = GoogleFont.Provider(
-    providerAuthority = "com.google.android.gms.fonts",
-    providerPackage = "com.google.android.gms",
-    certificates = R.array.com_google_android_gms_fonts_certs
-)
 
 fun getFontFamily(fontName: String): FontFamily {
     val clean = fontName.trim()
@@ -32,18 +24,7 @@ fun getFontFamily(fontName: String): FontFamily {
         "oswald" -> FontFamily(Font(R.font.oswald))
         "raleway" -> FontFamily(Font(R.font.raleway))
         "pacifico" -> FontFamily(Font(R.font.pacifico))
-        else -> {
-            try {
-                FontFamily(
-                    GoogleFontCompose(
-                        googleFont = GoogleFont(clean),
-                        fontProvider = provider
-                    )
-                )
-            } catch (e: Exception) {
-                FontFamily.Default
-            }
-        }
+        else -> FontFamily.Default
     }
 }
 

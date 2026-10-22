@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PlayArrow
 
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Refresh
 
 import androidx.compose.material3.*
 
@@ -182,24 +183,65 @@ fun ArtistsScreen(
                 .background(MaterialTheme.colorScheme.background)
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
+            val filteredArtists = remember(artistGroups, searchQuery) {
+                if (searchQuery.isBlank()) artistGroups.keys.toList()
+                else artistGroups.keys.filter { it.contains(searchQuery, ignoreCase = true) }
+            }
+
+            var isSearchingPhotos by remember { mutableStateOf(false) }
+            val screenScope = rememberCoroutineScope()
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                if (onDismissOverlay != null) {
-                    IconButton(onClick = onDismissOverlay) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (onDismissOverlay != null) {
+                        IconButton(onClick = onDismissOverlay) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
-                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = com.example.ui.Translations.get(settings.appLanguage, "artists"),
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 }
-                Text(
-                    text = com.example.ui.Translations.get(settings.appLanguage, "artists"),
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+
+                IconButton(
+                    onClick = {
+                        if (!isSearchingPhotos && filteredArtists.isNotEmpty()) {
+                            isSearchingPhotos = true
+                            screenScope.launch {
+                                try {
+                                    com.example.data.ArtistInfoFetcher.searchAndFetchAllArtistPhotos(filteredArtists)
+                                } finally {
+                                    isSearchingPhotos = false
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isSearchingPhotos
+                ) {
+                    if (isSearchingPhotos) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Buscar fotos de artistas en internet",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
             
             OutlinedTextField(
@@ -214,11 +256,6 @@ fun ArtistsScreen(
                     focusedBorderColor = MaterialTheme.colorScheme.primary
                 )
             )
-
-            val filteredArtists = remember(artistGroups, searchQuery) {
-                if (searchQuery.isBlank()) artistGroups.keys.toList()
-                else artistGroups.keys.filter { it.contains(searchQuery, ignoreCase = true) }
-            }
 
             val coroutineScope = rememberCoroutineScope()
             val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
@@ -577,6 +614,46 @@ fun ArtistDetailScreen(
                         .background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                }
+
+                var isRefreshingDetail by remember { mutableStateOf(false) }
+                val detailScope = rememberCoroutineScope()
+
+                IconButton(
+                    onClick = {
+                        if (!isRefreshingDetail) {
+                            isRefreshingDetail = true
+                            detailScope.launch {
+                                try {
+                                    val sample = tracks.firstOrNull()
+                                    val newInfo = com.example.data.ArtistInfoFetcher.getArtistInfo(
+                                        artistName = artistName,
+                                        trackTitle = sample?.title,
+                                        albumName = sample?.album,
+                                        genre = sample?.genre
+                                    )
+                                    artistInfo = newInfo
+                                } finally {
+                                    isRefreshingDetail = false
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .align(Alignment.TopEnd)
+                        .background(Color.Black.copy(alpha = 0.5f), CircleShape),
+                    enabled = !isRefreshingDetail
+                ) {
+                    if (isRefreshingDetail) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = "Actualizar foto e información", tint = Color.White)
+                    }
                 }
             }
         }

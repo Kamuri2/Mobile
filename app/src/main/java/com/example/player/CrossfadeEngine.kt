@@ -21,9 +21,9 @@ import kotlin.math.pow
  */
 class CrossfadeEngine(
     private val context: Context,
-    var crossfadeDurationMs: Long = 100L,
-    var fadeOutDurationMs: Long = 100L,
-    var fadeInDurationMs: Long = 100L
+    var crossfadeDurationMs: Long = 200L,
+    var fadeOutDurationMs: Long = 200L,
+    var fadeInDurationMs: Long = 200L
 ) {
     private var scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -77,24 +77,30 @@ class CrossfadeEngine(
         currentOutgoingPlayer = playerOut
         currentIncomingPlayer = playerIn
 
-        if (durationMs <= 40L) {
+        val actualDur = durationMs.coerceIn(50L, 250L)
+        if (actualDur <= 40L) {
             performInstantSwitch(playerOut, playerIn)
             return
         }
 
-        val stepDelayMs = 20L
-        val steps = (durationMs / stepDelayMs).toInt().coerceIn(5, 50)
-        val actualStepDelay = (durationMs / steps).coerceAtLeast(5L)
+        val stepDelayMs = 15L
+        val steps = (actualDur / stepDelayMs).toInt().coerceIn(5, 16)
+        val actualStepDelay = (actualDur / steps).coerceAtLeast(8L)
 
         try {
             for (i in 0..steps) {
                 val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
 
-                // Equal-Power Sinusoidal Curve: cos(angle) and sin(angle)
-                // Maintains constant perceived loudness throughout the entire mix transition
+                // Advanced Frequency-Balanced Equal-Power Crossfade:
                 val angle = progress * (Math.PI / 2.0)
-                val outVol = (kotlin.math.cos(angle).toFloat() * userVolume).coerceIn(0f, 1f)
-                val inVol = (kotlin.math.sin(angle).toFloat() * userVolume).coerceIn(0f, 1f)
+                val cosVal = kotlin.math.cos(angle)
+                val sinVal = kotlin.math.sin(angle)
+
+                val outFreqFactor = (1.0 - 0.22 * progress.toDouble().pow(1.6))
+                val inFreqFactor = (0.86 + 0.14 * progress.toDouble().pow(0.5))
+
+                val outVol = ((cosVal * outFreqFactor).toFloat() * userVolume).coerceIn(0f, 1f)
+                val inVol = ((sinVal * inFreqFactor).toFloat() * userVolume).coerceIn(0f, 1f)
 
                 if (playerOut != null && playerOut.playbackState != ExoPlayer.STATE_ENDED) {
                     playerOut.volume = outVol
@@ -106,7 +112,7 @@ class CrossfadeEngine(
                 delay(actualStepDelay)
             }
         } finally {
-            // ALWAYS cleanup outgoing player completely
+            // ALWAYS cleanup outgoing player completely immediately
             try {
                 playerOut?.volume = 0f
                 playerOut?.stop()
@@ -148,7 +154,8 @@ class CrossfadeEngine(
         incomingPlayer.playWhenReady = true
         incomingPlayer.play()
 
-        if (durationMs <= 40L) {
+        val actualDur = durationMs.coerceIn(50L, 250L)
+        if (actualDur <= 40L) {
             performInstantSwitch(outgoingPlayer, incomingPlayer)
             onComplete()
             return
@@ -156,8 +163,8 @@ class CrossfadeEngine(
 
         crossfadeJob = ensureActiveScope().launch {
             try {
-                // 3. Execute calculated 100ms equal-power crossfade
-                performCrossfade(outgoingPlayer, incomingPlayer, durationMs)
+                // 3. Execute snappy 200ms equal-power crossfade
+                performCrossfade(outgoingPlayer, incomingPlayer, actualDur)
             } finally {
                 incomingPlayer.volume = userVolume
                 isCrossfading = false

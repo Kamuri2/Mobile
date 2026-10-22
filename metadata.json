@@ -1,6 +1,8 @@
 {
   "name": "Fuzion Player",
-  "description": "Reproductor de música estilo Liquid Glass con escaneo de carpetas, metadatos completos, carátulas y letras sincronizadas.",
+  "description": "A modern fluid music player with synchronized lyrics and artist biographies.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
