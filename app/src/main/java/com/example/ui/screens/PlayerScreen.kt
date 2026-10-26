@@ -25,6 +25,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -226,11 +227,6 @@ fun PlayerScreen(
             skipTrigger++
         }
         oldTrackId = trackId
-        currentTrack?.let { track ->
-            if (track.lyrics.isBlank() || com.example.data.AudioLyricsExtractor.isCorruptedLyrics(track.lyrics)) {
-                playerManager.loadLyricsForTrack(track, forceRescan = false)
-            }
-        }
     }
 
     var showAddToPlaylistModal by remember { mutableStateOf(false) }
@@ -239,8 +235,20 @@ fun PlayerScreen(
     val pipelineArtistProfiles by playerManager.currentArtistProfiles.collectAsState()
     val isArtistLoading by playerManager.isArtistInfoLoading.collectAsState()
 
-    val artistInfo = pipelineArtistInfo ?: remember(currentTrack?.artist) {
-        currentTrack?.artist?.let { com.example.data.ArtistInfoFetcher.getCachedArtistInfo(it) }
+    val currentArtistName = currentTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: ""
+    val artistInfo = remember(pipelineArtistInfo, currentArtistName) {
+        val primaryArtist = if (currentArtistName.isNotBlank()) {
+            com.example.util.ArtistParser.splitArtists(currentArtistName).firstOrNull() ?: currentArtistName
+        } else ""
+        if (pipelineArtistInfo != null && (
+            pipelineArtistInfo?.name.equals(currentArtistName, ignoreCase = true) ||
+            pipelineArtistInfo?.name.equals(primaryArtist, ignoreCase = true) ||
+            currentArtistName.contains(pipelineArtistInfo?.name ?: "", ignoreCase = true)
+        )) {
+            pipelineArtistInfo
+        } else if (primaryArtist.isNotBlank()) {
+            com.example.data.ArtistInfoFetcher.getCachedArtistInfo(primaryArtist) ?: com.example.model.ArtistInfo(name = primaryArtist)
+        } else null
     }
 
     val parsedLyrics = remember(currentTrack?.lyrics) {
@@ -435,7 +443,14 @@ fun PlayerScreen(
                             color = primaryTextColor,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 1500,
+                                    repeatDelayMillis = 1000
+                                )
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
@@ -445,7 +460,14 @@ fun PlayerScreen(
                             color = secondaryTextColor,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 2000,
+                                    repeatDelayMillis = 1000
+                                )
                         )
                     }
 
@@ -1030,8 +1052,8 @@ fun PlayerScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp)
                     ) {
-                        // Breathing space between cover and current playing lyric
-                        Spacer(modifier = Modifier.height(14.dp))
+                        // Breathing space between cover and current playing lyric (uniform spacing)
+                        Spacer(modifier = Modifier.height(22.dp))
 
                         // Currently playing lyric placed in the middle (between cover and title) matching user reference
                         val activeLyricLine = remember(parsedLyrics, currentPositionMs, currentTrack?.lyrics, durationMs) {
@@ -1096,7 +1118,8 @@ fun PlayerScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        // Uniform breathing space between currently playing lyric and song title
+                        Spacer(modifier = Modifier.height(20.dp))
 
                         val noTrackText = com.example.ui.Translations.get(settings.appLanguage, "no_track_playing")
                         val unknownArtistText = com.example.ui.Translations.get(settings.appLanguage, "unknown_artist")
@@ -1108,7 +1131,14 @@ fun PlayerScreen(
                             color = primaryTextColor,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 1500,
+                                    repeatDelayMillis = 1000
+                                )
                         )
 
                         Spacer(modifier = Modifier.height(4.dp))
@@ -1120,14 +1150,22 @@ fun PlayerScreen(
                             color = secondaryTextColor,
                             textAlign = TextAlign.Center,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    initialDelayMillis = 2000,
+                                    repeatDelayMillis = 1000
+                                )
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(seekbarTopSpace))
+                // Uniform breathing space between title/artist and progress seekbar
+                Spacer(modifier = Modifier.height(22.dp))
 
-                // Capsule Progress Bar matching Image 1
+                // Progress Bar with Circular Thumb Indicator matching user reference image
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
                     var isDragging by remember { mutableStateOf(false) }
                     var dragFraction by remember { mutableFloatStateOf(0f) }
@@ -1136,10 +1174,7 @@ fun PlayerScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(13.dp)
-                            .clip(RoundedCornerShape(percent = 50))
-                            .background(if (isDarkMode) Color(0x33000000) else Color(0x14000000))
-                            .border(1.5.dp, if (isDarkMode) Color(0x66FFFFFF) else Color(0x33000000), RoundedCornerShape(percent = 50))
+                            .height(28.dp)
                             .pointerInput(effectiveDuration) {
                                 detectTapGestures { offset ->
                                     val fraction = (offset.x / size.width).coerceIn(0f, 1f)
@@ -1166,22 +1201,47 @@ fun PlayerScreen(
                                         dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
                                     }
                                 )
-                            }
-                            .padding(2.dp)
+                            },
+                        contentAlignment = Alignment.CenterStart
                     ) {
+                        // 1. Background Unplayed Track
                         Box(
                             modifier = Modifier
-                                .fillMaxHeight()
-                                .fillMaxWidth(effectiveFraction.coerceAtLeast(0.01f))
+                                .fillMaxWidth()
+                                .height(4.5.dp)
+                                .clip(RoundedCornerShape(percent = 50))
+                                .background(if (isDarkMode) Color.White.copy(alpha = 0.32f) else Color.Black.copy(alpha = 0.18f))
+                        )
+
+                        // 2. Active Played Track
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(effectiveFraction.coerceIn(0.005f, 1f))
+                                .height(4.5.dp)
                                 .clip(RoundedCornerShape(percent = 50))
                                 .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E))
                         )
+
+                        // 3. Circular Thumb Knob Indicator
+                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                            val thumbDiameter = 14.dp
+                            val maxOffset = maxWidth - thumbDiameter
+                            val thumbOffset = (maxOffset * effectiveFraction).coerceIn(0.dp, maxOffset)
+
+                            Box(
+                                modifier = Modifier
+                                    .offset(x = thumbOffset)
+                                    .size(thumbDiameter)
+                                    .shadow(elevation = if (isDragging) 4.dp else 2.dp, shape = CircleShape)
+                                    .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E), CircleShape)
+                            )
+                        }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         val currentMs = if (isDragging) (dragFraction * effectiveDuration).toLong() else displayPositionMs
@@ -1200,8 +1260,8 @@ fun PlayerScreen(
                     }
                 }
 
-                // Generous breathing space between seekbar and playback controls
-                Spacer(modifier = Modifier.height(26.dp))
+                // Uniform breathing space between seekbar and playback controls
+                Spacer(modifier = Modifier.height(22.dp))
 
                 // Playback Controls Row matching reference image:
                 // [Heart] [FastRewind <<] [Pause || / Play >] [FastForward >>] [Menu =]

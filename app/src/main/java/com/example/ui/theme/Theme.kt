@@ -2,6 +2,9 @@ package com.example.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
@@ -40,7 +43,7 @@ fun LiquidMusicTheme(
             onSurface = Color.White
         )
     } else {
-        androidx.compose.material3.lightColorScheme(
+        lightColorScheme(
             primary = theme.primaryColor,
             background = Color(0xFFF7F8FA),
             surface = Color.White,
@@ -49,8 +52,19 @@ fun LiquidMusicTheme(
             onSurface = Color(0xFF111111)
         )
     }
+
+    val fontName = appSettings?.fontFamilyName ?: "System Font (Default)"
+    val currentFontFamily = getFontFamily(fontName)
+    val typography = createAppTypography(fontName)
+
     MaterialTheme(
         colorScheme = colorScheme,
-        content = content
-    )
+        typography = typography
+    ) {
+        ProvideTextStyle(
+            value = LocalTextStyle.current.copy(fontFamily = currentFontFamily)
+        ) {
+            content()
+        }
+    }
 }

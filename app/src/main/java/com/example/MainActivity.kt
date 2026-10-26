@@ -117,14 +117,22 @@ class MainActivity : ComponentActivity() {
     private lateinit var playerManager: AudioPlayerManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val splashScreen = installSplashScreen()
+        try {
+            installSplashScreen()
+        } catch (_: Throwable) {
+            // Safe fallback if device splash screen engine encounters OEM issues
+        }
         super.onCreate(savedInstanceState)
-        com.example.data.ArtistImageRepository.init(this)
-        com.example.data.ArtistInfoFetcher.init(this)
-        com.example.data.TrackRepository.init(this)
+        try {
+            com.example.data.ArtistImageRepository.init(this)
+            com.example.data.ArtistInfoFetcher.init(this)
+            com.example.data.TrackRepository.init(this)
+        } catch (_: Throwable) {
+        }
         enableEdgeToEdge()
 
         playerManager = AudioPlayerManager.getInstance(applicationContext)
+        playerManager.startPlaybackService()
 
         setContent {
             LiquidMusicApp(playerManager = playerManager)
@@ -202,9 +210,11 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                 verticalArrangement = Arrangement.Center
             ) {
                 Image(
-                    painter = androidx.compose.ui.res.painterResource(id = R.mipmap.ic_launcher),
+                    painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_app_logo),
                     contentDescription = "Fuzion Player",
-                    modifier = Modifier.size(110.dp)
+                    modifier = Modifier
+                        .size(110.dp)
+                        .clip(RoundedCornerShape(24.dp))
                 )
                 Spacer(modifier = Modifier.height(18.dp))
                 Text(
@@ -295,9 +305,12 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
         }
     }
 
-    // MediaStore Permission Launcher
+    // MediaStore & Notification Permission Launcher
     val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
+        arrayOf(
+            Manifest.permission.READ_MEDIA_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS
+        )
     } else {
         arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
@@ -331,19 +344,27 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
             performScan(isForceRescan)
             isForceRescan = false
         }
+        playerManager.startPlaybackService()
     }
 
-    // Initial Scanner Load
+    // Initial Scanner & Notification Permission Check
     LaunchedEffect(Unit) {
-        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val hasStoragePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
-        if (hasPermission) {
-            performScan(false)
+        val hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         } else {
+            true
+        }
+
+        if (!hasStoragePermission || !hasNotificationPermission) {
             permissionLauncher.launch(requiredPermissions)
+        }
+        if (hasStoragePermission) {
+            performScan(false)
         }
     }
 
@@ -815,66 +836,89 @@ fun FiveTabBottomNavBar(
     onScreenSelect: (NavigationScreen) -> Unit
 ) {
     val isDark = appSettings.isDarkMode
-    val navBg = if (isDark) Color(0xFF0F0F0F) else Color(0xFFFFFFFF)
-    val navBorder = if (isDark) Color(0x1AFFFFFF) else Color(0x1F000000)
+    val theme = appSettings.selectedTheme
+
+    // Floating navigation pill that dynamically inherits the user's selected theme
+    val pillBg = if (isDark) {
+        theme.bgGradientEnd.copy(alpha = 0.94f)
+    } else {
+        Color.White.copy(alpha = 0.96f)
+    }
+    val pillBorder = if (isDark) {
+        theme.primaryColor.copy(alpha = 0.32f)
+    } else {
+        Color(0x1F000000)
+    }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(navBg)
-            .border(width = 0.5.dp, color = navBorder)
-            .padding(vertical = 6.dp)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+        androidx.compose.material3.Surface(
+            shape = RoundedCornerShape(32.dp),
+            color = pillBg,
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            border = androidx.compose.foundation.BorderStroke(1.dp, pillBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("floating_nav_bar")
         ) {
-            NavItem5(
-                label = com.example.ui.Translations.get(appSettings.appLanguage, "home"),
-                icon = Icons.Default.Home,
-                isSelected = currentScreen == NavigationScreen.HOME,
-                isDarkMode = isDark,
-                primaryColor = appSettings.selectedTheme.primaryColor,
-                onClick = { onScreenSelect(NavigationScreen.HOME) },
-                testTag = "nav_home"
-            )
-            NavItem5(
-                label = com.example.ui.Translations.get(appSettings.appLanguage, "folders"),
-                icon = Icons.Default.Folder,
-                isSelected = currentScreen == NavigationScreen.FOLDERS,
-                isDarkMode = isDark,
-                primaryColor = appSettings.selectedTheme.primaryColor,
-                onClick = { onScreenSelect(NavigationScreen.FOLDERS) },
-                testTag = "nav_folders"
-            )
-            NavItem5(
-                label = com.example.ui.Translations.get(appSettings.appLanguage, "playlists"),
-                icon = Icons.Default.PlaylistPlay,
-                isSelected = currentScreen == NavigationScreen.PLAYLISTS,
-                isDarkMode = isDark,
-                primaryColor = appSettings.selectedTheme.primaryColor,
-                onClick = { onScreenSelect(NavigationScreen.PLAYLISTS) },
-                testTag = "nav_playlists"
-            )
-            NavItem5(
-                label = com.example.ui.Translations.get(appSettings.appLanguage, "albums"),
-                icon = Icons.Default.Album,
-                isSelected = currentScreen == NavigationScreen.ALBUMS,
-                isDarkMode = isDark,
-                primaryColor = appSettings.selectedTheme.primaryColor,
-                onClick = { onScreenSelect(NavigationScreen.ALBUMS) },
-                testTag = "nav_albums"
-            )
-            NavItem5(
-                label = com.example.ui.Translations.get(appSettings.appLanguage, "artists"),
-                icon = Icons.Default.Person,
-                isSelected = currentScreen == NavigationScreen.ARTISTS,
-                isDarkMode = isDark,
-                primaryColor = appSettings.selectedTheme.primaryColor,
-                onClick = { onScreenSelect(NavigationScreen.ARTISTS) },
-                testTag = "nav_artists"
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                NavItem5(
+                    label = com.example.ui.Translations.get(appSettings.appLanguage, "home"),
+                    icon = Icons.Default.Home,
+                    isSelected = currentScreen == NavigationScreen.HOME,
+                    isDarkMode = isDark,
+                    primaryColor = theme.primaryColor,
+                    onClick = { onScreenSelect(NavigationScreen.HOME) },
+                    testTag = "nav_home"
+                )
+                NavItem5(
+                    label = com.example.ui.Translations.get(appSettings.appLanguage, "folders"),
+                    icon = Icons.Default.Folder,
+                    isSelected = currentScreen == NavigationScreen.FOLDERS,
+                    isDarkMode = isDark,
+                    primaryColor = theme.primaryColor,
+                    onClick = { onScreenSelect(NavigationScreen.FOLDERS) },
+                    testTag = "nav_folders"
+                )
+                NavItem5(
+                    label = com.example.ui.Translations.get(appSettings.appLanguage, "playlists"),
+                    icon = Icons.Default.PlaylistPlay,
+                    isSelected = currentScreen == NavigationScreen.PLAYLISTS,
+                    isDarkMode = isDark,
+                    primaryColor = theme.primaryColor,
+                    onClick = { onScreenSelect(NavigationScreen.PLAYLISTS) },
+                    testTag = "nav_playlists"
+                )
+                NavItem5(
+                    label = com.example.ui.Translations.get(appSettings.appLanguage, "albums"),
+                    icon = Icons.Default.Album,
+                    isSelected = currentScreen == NavigationScreen.ALBUMS,
+                    isDarkMode = isDark,
+                    primaryColor = theme.primaryColor,
+                    onClick = { onScreenSelect(NavigationScreen.ALBUMS) },
+                    testTag = "nav_albums"
+                )
+                NavItem5(
+                    label = com.example.ui.Translations.get(appSettings.appLanguage, "artists"),
+                    icon = Icons.Default.Person,
+                    isSelected = currentScreen == NavigationScreen.ARTISTS,
+                    isDarkMode = isDark,
+                    primaryColor = theme.primaryColor,
+                    onClick = { onScreenSelect(NavigationScreen.ARTISTS) },
+                    testTag = "nav_artists"
+                )
+            }
         }
     }
 }
@@ -890,21 +934,21 @@ private fun NavItem5(
     testTag: String
 ) {
     val selectedColor = primaryColor
-    val unselectedColor = if (isDarkMode) Color.Gray else Color(0xFF757575)
-    val selectedBg = if (isDarkMode) Color(0xFF262626) else primaryColor.copy(alpha = 0.14f)
+    val unselectedColor = if (isDarkMode) Color(0xFF9E9E9E) else Color(0xFF757575)
+    val selectedBg = if (isDarkMode) primaryColor.copy(alpha = 0.22f) else primaryColor.copy(alpha = 0.14f)
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 6.dp, vertical = 2.dp)
             .testTag(testTag)
     ) {
         Box(
             modifier = Modifier
                 .clip(CircleShape)
                 .background(if (isSelected) selectedBg else Color.Transparent)
-                .padding(8.dp),
+                .padding(horizontal = 14.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center
         ) {
             Icon(

@@ -76,19 +76,30 @@ fun ArtistInfoCard(
     isLoading: Boolean = false
 ) {
     val cacheRevision by com.example.data.ArtistInfoFetcher.cacheRevision.collectAsState()
+    val currentArtist = track?.artist?.trim() ?: ""
+    val isExternalProfileMatchingTrack = remember(track?.id, track?.artist, externalProfiles) {
+        !externalProfiles.isNullOrEmpty() && externalProfiles.any { profile ->
+            currentArtist.isNotBlank() && (
+                currentArtist.contains(profile.name, ignoreCase = true) ||
+                profile.name.contains(currentArtist, ignoreCase = true)
+            )
+        }
+    }
+
     var profiles by remember(track?.id, track?.artist, externalProfiles, cacheRevision) {
         mutableStateOf(
-            if (!externalProfiles.isNullOrEmpty()) externalProfiles
+            if (isExternalProfileMatchingTrack && !externalProfiles.isNullOrEmpty()) externalProfiles
             else com.example.data.ArtistInfoFetcher.getCachedArtistsForTrack(track)
         )
     }
 
     LaunchedEffect(track?.id, track?.artist, externalProfiles, cacheRevision) {
-        if (!externalProfiles.isNullOrEmpty()) {
+        if (isExternalProfileMatchingTrack && !externalProfiles.isNullOrEmpty()) {
             profiles = externalProfiles
             return@LaunchedEffect
         }
         if (track != null) {
+            profiles = com.example.data.ArtistInfoFetcher.getCachedArtistsForTrack(track)
             val allComplete = profiles.isNotEmpty() && profiles.all {
                 !it.info.imageUrl.isNullOrBlank() && !it.info.bio.isNullOrBlank()
             }

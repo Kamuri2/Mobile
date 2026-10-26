@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import com.example.model.AppSettings
 import com.example.model.AppTheme
 import com.example.ui.Translations
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -244,6 +245,125 @@ fun SettingsScreen(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = textColorPrimary
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 2. Crossfade & Transitions Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, cardBorder, RoundedCornerShape(22.dp)),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = cardBg)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Brush.linearGradient(listOf(primaryColor, primaryColor.copy(alpha = 0.5f)))),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.GraphicEq,
+                            contentDescription = null,
+                            tint = Color.Black,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = Translations.get(lang, "crossfade_duration"),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textColorPrimary
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        val currentDur = settings.crossfadeDuration
+                        val durLabel = if (currentDur <= 0.05f) {
+                            if (lang.lowercase().startsWith("es")) "Desactivado (0 ms)" else "Disabled (0 ms)"
+                        } else if (currentDur < 1.0f) {
+                            "${(currentDur * 1000f).roundToInt()} ms"
+                        } else {
+                            String.format(java.util.Locale.US, "%.1f s", currentDur)
+                        }
+                        Text(
+                            text = "${if (lang.lowercase().startsWith("es")) "Duración" else "Duration"}: $durLabel",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = primaryColor
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Interactive Slider (0.0s to 5.0s)
+                Slider(
+                    value = settings.crossfadeDuration,
+                    onValueChange = { newVal ->
+                        val rounded = (newVal * 10f).roundToInt() / 10f
+                        onUpdateSettings(settings.copy(crossfadeDuration = rounded))
+                    },
+                    valueRange = 0.0f..5.0f,
+                    steps = 49,
+                    colors = SliderDefaults.colors(
+                        thumbColor = primaryColor,
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = primaryColor.copy(alpha = 0.25f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Quick presets
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val presets = listOf(
+                        Pair(0.0f, if (lang.lowercase().startsWith("es")) "0 ms (Off)" else "0 ms (Off)"),
+                        Pair(0.2f, "200 ms"),
+                        Pair(0.5f, "500 ms"),
+                        Pair(1.0f, "1.0 s"),
+                        Pair(2.0f, "2.0 s"),
+                        Pair(3.0f, "3.0 s")
+                    )
+                    presets.forEach { (duration, label) ->
+                        val isSelected = kotlin.math.abs(settings.crossfadeDuration - duration) < 0.05f
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSelected) primaryColor else formatPillBg)
+                                .border(1.dp, if (isSelected) primaryColor else cardBorder, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    onUpdateSettings(settings.copy(crossfadeDuration = duration))
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = label,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) Color.Black else textColorPrimary
                             )
                         }
                     }
@@ -578,7 +698,7 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    val presets = listOf("System Font (Default)", "Outfit", "Poppins", "Montserrat", "Inter", "Playfair Display", "Roboto", "Lato", "Pacifico")
+                    val presets = listOf("System Font (Default)", "Outfit", "Poppins", "Montserrat", "Inter", "Playfair Display", "Roboto", "Lato", "Oswald", "Raleway", "Pacifico")
                     presets.forEach { fontName ->
                         val isCur = settings.fontFamilyName == fontName
                         Box(
@@ -649,121 +769,7 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 4. Lyrics Settings Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, cardBorder, RoundedCornerShape(22.dp)),
-            shape = RoundedCornerShape(22.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.MusicNote,
-                        contentDescription = null,
-                        tint = primaryColor,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = Translations.get(lang, "lyrics_settings"),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textColorPrimary
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                // Font Size Slider
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(Translations.get(lang, "lyrics_font_size"), fontSize = 14.sp, fontWeight = FontWeight.Medium, color = textColorPrimary)
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(primaryColor.copy(alpha = 0.2f))
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = "${settings.lyricsFontSizePercent}%",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = primaryColor
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Slider(
-                    value = settings.lyricsFontSizePercent.toFloat(),
-                    onValueChange = { onUpdateSettings(settings.copy(lyricsFontSizePercent = it.toInt())) },
-                    valueRange = 80f..150f,
-                    colors = SliderDefaults.colors(
-                        thumbColor = if (isDark) Color.White else primaryColor,
-                        activeTrackColor = primaryColor,
-                        inactiveTrackColor = if (isDark) Color(0x33FFFFFF) else Color(0x22000000)
-                    )
-                )
-
-                Text(
-                    text = Translations.get(lang, "lyrics_size_desc"),
-                    fontSize = 12.sp,
-                    color = textColorMuted
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // Translation toggle
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Translate, contentDescription = null, tint = textColorSecondary, modifier = Modifier.size(20.dp))
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = Translations.get(lang, "lyrics_translation"),
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = textColorPrimary
-                            )
-                            Text(
-                                text = Translations.get(lang, "lyrics_translation_desc"),
-                                fontSize = 12.sp,
-                                color = textColorMuted
-                            )
-                        }
-                    }
-
-                    Switch(
-                        checked = settings.isLyricsTranslationEnabled,
-                        onCheckedChange = { onUpdateSettings(settings.copy(isLyricsTranslationEnabled = it)) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = primaryColor,
-                            uncheckedThumbColor = if (isDark) Color.White.copy(alpha = 0.6f) else Color(0xFF888888),
-                            uncheckedTrackColor = if (isDark) Color(0x33FFFFFF) else Color(0x22000000)
-                        )
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // 5. Music Library Card
+        // Music Library Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()

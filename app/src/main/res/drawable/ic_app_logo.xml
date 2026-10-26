@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Rounded burgundy background matching launcher icon -->
+    <path
+        android:fillColor="#471E1D"
+        android:pathData="M 24,0 L 84,0 A 24,24 0 0 1 108,24 L 108,84 A 24,24 0 0 1 84,108 L 24,108 A 24,24 0 0 1 0,84 L 0,24 A 24,24 0 0 1 24,0 Z" />
+    <!-- Silver boomerang emblem -->
+    <path
+        android:fillColor="#B8B8B8"
+        android:pathData="M 28.07,38.99 C 23.29,33.19 27.39,24.66 34.55,25.34 C 40.35,26.02 45.81,32.16 50.59,37.96 C 58.09,45.47 66.96,48.54 76.52,50.59 C 83.00,51.95 83.00,56.05 76.52,57.41 C 66.96,59.46 58.09,62.53 50.59,70.04 C 45.81,75.84 40.35,81.98 34.55,82.66 C 27.39,83.34 23.29,74.81 28.07,69.01 C 33.19,62.87 43.76,58.44 43.76,54.00 C 43.76,49.56 33.19,45.13 28.07,38.99 Z" />
+</vector>

@@ -169,10 +169,12 @@ fun ArtistsScreen(
         )
         
         if (showAboutDialog) {
+            val sampleAlbum = artistTracks.map { it.album }.firstOrNull { it.isNotBlank() && it != "<unknown>" && it != "Unknown Album" }
             ArtistAboutScreen(
                 artistName = selectedArtist!!,
                 language = settings.appLanguage,
                 sampleTrack = artistTracks.firstOrNull(),
+                sampleAlbum = sampleAlbum,
                 onBack = { showAboutDialog = false }
             )
         }
@@ -626,11 +628,13 @@ fun ArtistDetailScreen(
                             detailScope.launch {
                                 try {
                                     val sample = tracks.firstOrNull()
+                                    val sampleAlbum = tracks.map { it.album }.firstOrNull { it.isNotBlank() && it != "<unknown>" && it != "Unknown Album" }
                                     val newInfo = com.example.data.ArtistInfoFetcher.getArtistInfo(
                                         artistName = artistName,
                                         trackTitle = sample?.title,
-                                        albumName = sample?.album,
-                                        genre = sample?.genre
+                                        albumName = sampleAlbum ?: sample?.album,
+                                        genre = sample?.genre,
+                                        forceRefresh = true
                                     )
                                     artistInfo = newInfo
                                 } finally {
@@ -907,22 +911,26 @@ fun ArtistAboutScreen(
     artistName: String,
     language: String = "en",
     sampleTrack: Track? = null,
+    sampleAlbum: String? = null,
     onBack: () -> Unit
 ) {
     val cacheRevision by ArtistInfoFetcher.cacheRevision.collectAsState()
     var artistInfo by remember(artistName, cacheRevision) { mutableStateOf<ArtistInfo?>(ArtistInfoFetcher.getCachedArtistInfo(artistName)) }
-    
+    var isRefreshingAbout by remember { mutableStateOf(false) }
+    val aboutScope = rememberCoroutineScope()
+
     LaunchedEffect(artistName, cacheRevision) {
         val cached = ArtistInfoFetcher.getCachedArtistInfo(artistName)
-        if (cached != null && !cached.imageUrl.isNullOrBlank() && !cached.bio.isNullOrBlank()) {
+        if (cached != null && !cached.imageUrl.isNullOrBlank() && !ArtistInfoFetcher.isFallbackBio(cached.bio)) {
             artistInfo = cached
         } else {
             if (cached != null) artistInfo = cached
-            artistInfo = ArtistInfoFetcher.fetchArtistInfo(
-                rawArtistName = artistName,
+            artistInfo = ArtistInfoFetcher.getArtistInfo(
+                artistName = artistName,
                 trackTitle = sampleTrack?.title,
-                albumName = sampleTrack?.album,
-                genre = sampleTrack?.genre
+                albumName = sampleAlbum ?: sampleTrack?.album,
+                genre = sampleTrack?.genre,
+                forceRefresh = false
             )
         }
     }
@@ -958,6 +966,43 @@ fun ArtistAboutScreen(
             ) {
                 Icon(Icons.Default.ArrowBack, contentDescription = com.example.ui.Translations.get(language, "close"), tint = Color.White)
             }
+
+            IconButton(
+                onClick = {
+                    if (!isRefreshingAbout) {
+                        isRefreshingAbout = true
+                        aboutScope.launch {
+                            try {
+                                val fresh = ArtistInfoFetcher.getArtistInfo(
+                                    artistName = artistName,
+                                    trackTitle = sampleTrack?.title,
+                                    albumName = sampleAlbum ?: sampleTrack?.album,
+                                    genre = sampleTrack?.genre,
+                                    forceRefresh = true
+                                )
+                                artistInfo = fresh
+                            } finally {
+                                isRefreshingAbout = false
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(Alignment.TopEnd)
+                    .background(Color.Black.copy(alpha = 0.5f), CircleShape),
+                enabled = !isRefreshingAbout
+            ) {
+                if (isRefreshingAbout) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "Actualizar información", tint = Color.White)
+                }
+            }
             
             Text(
                 text = artistName,
@@ -969,20 +1014,28 @@ fun ArtistAboutScreen(
         }
         
         Column(modifier = Modifier.padding(24.dp)) {
-            Text(text = "${artistInfo?.followers ?: "0"}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = com.example.ui.Translations.get(language, "followers").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text(text = "${artistInfo?.listeners ?: "0"}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = com.example.ui.Translations.get(language, "monthly_listeners").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text(text = artistInfo?.origin ?: com.example.ui.Translations.get(language, "unknown_artist"), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-            Text(text = com.example.ui.Translations.get(language, "origin").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
-            
-            Spacer(modifier = Modifier.height(40.dp))
+            val followers = artistInfo?.followers?.takeIf { it.isNotBlank() && it != "0" }
+            if (followers != null) {
+                Text(text = followers, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text(text = com.example.ui.Translations.get(language, "followers").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+
+            val listeners = artistInfo?.listeners?.takeIf { it.isNotBlank() && it != "0" }
+            if (listeners != null) {
+                Text(text = listeners, fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text(text = com.example.ui.Translations.get(language, "monthly_listeners").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+
+            val origin = artistInfo?.origin?.takeIf { it.isNotBlank() && it != "Unknown" }
+            if (origin != null) {
+                Text(text = origin, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text(text = com.example.ui.Translations.get(language, "origin").uppercase(), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = GlassTextMuted, letterSpacing = 1.sp)
+                Spacer(modifier = Modifier.height(32.dp))
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
             
             val rawBio = artistInfo?.bio
             val targetLangCode = remember(language) { com.example.data.TranslationHelper.mapToLanguageCode(language) }

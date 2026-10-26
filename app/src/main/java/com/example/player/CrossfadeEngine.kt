@@ -47,6 +47,8 @@ class CrossfadeEngine(
     private var currentOutgoingPlayer: ExoPlayer? = null
     private var currentIncomingPlayer: ExoPlayer? = null
 
+    private var currentTransitionId = 0L
+
     fun attachActivePlayer(player: ExoPlayer, volume: Float) {
         activePlayer = player
         userVolume = volume
@@ -64,31 +66,33 @@ class CrossfadeEngine(
 
     /**
      * Executes the gradual, calculated crossfade between outgoing and incoming player.
-     * Uses equal-power sinusoidal curves (cos/sin) and 25ms steps to eliminate audio dips,
-     * hanging, and clicks according to the user-configured duration in settings.
+     * Uses equal-power sinusoidal curves (cos/sin) to eliminate audio dips according to settings.
      */
     suspend fun performCrossfade(
         playerOut: ExoPlayer?,
         playerIn: ExoPlayer,
-        durationMs: Long = crossfadeDurationMs
+        durationMs: Long = crossfadeDurationMs,
+        transitionId: Long = currentTransitionId
     ) {
         playerOut?.repeatMode = ExoPlayer.REPEAT_MODE_OFF
         playerIn.repeatMode = ExoPlayer.REPEAT_MODE_OFF
         currentOutgoingPlayer = playerOut
         currentIncomingPlayer = playerIn
 
-        val actualDur = durationMs.coerceIn(50L, 250L)
+        val actualDur = durationMs.coerceIn(0L, 5000L)
         if (actualDur <= 40L) {
             performInstantSwitch(playerOut, playerIn)
             return
         }
 
         val stepDelayMs = 15L
-        val steps = (actualDur / stepDelayMs).toInt().coerceIn(5, 16)
+        val steps = (actualDur / stepDelayMs).toInt().coerceIn(5, 50)
         val actualStepDelay = (actualDur / steps).coerceAtLeast(8L)
 
         try {
             for (i in 0..steps) {
+                if (transitionId != currentTransitionId) return
+
                 val progress = (i.toFloat() / steps).coerceIn(0f, 1f)
 
                 // Advanced Frequency-Balanced Equal-Power Crossfade:
@@ -112,18 +116,20 @@ class CrossfadeEngine(
                 delay(actualStepDelay)
             }
         } finally {
-            // ALWAYS cleanup outgoing player completely immediately
-            try {
-                playerOut?.volume = 0f
-                playerOut?.stop()
-                playerOut?.clearMediaItems()
-            } catch (_: Exception) {}
+            // ONLY perform cleanup if this is STILL the active transition!
+            if (transitionId == currentTransitionId) {
+                try {
+                    playerOut?.volume = 0f
+                    playerOut?.stop()
+                    playerOut?.clearMediaItems()
+                } catch (_: Exception) {}
 
-            playerIn.volume = userVolume
-            activePlayer = playerIn
-            isCrossfading = false
-            currentOutgoingPlayer = null
-            currentIncomingPlayer = null
+                playerIn.volume = userVolume
+                activePlayer = playerIn
+                isCrossfading = false
+                currentOutgoingPlayer = null
+                currentIncomingPlayer = null
+            }
         }
     }
 
@@ -138,7 +144,21 @@ class CrossfadeEngine(
         onBufferReady: () -> Unit,
         onComplete: () -> Unit
     ) {
-        cancelCrossfade()
+        val transitionId = ++currentTransitionId
+        crossfadeJob?.cancel()
+        preloadJob?.cancel()
+        crossfadeJob = null
+        preloadJob = null
+
+        // Safely mute outgoing player so multiple tracks don't overlap
+        if (outgoingPlayer != null && outgoingPlayer != incomingPlayer) {
+            try {
+                outgoingPlayer.volume = 0f
+                outgoingPlayer.stop()
+                outgoingPlayer.clearMediaItems()
+            } catch (_: Exception) {}
+        }
+
         currentOutgoingPlayer = outgoingPlayer
         currentIncomingPlayer = incomingPlayer
         userVolume = volume
@@ -149,26 +169,30 @@ class CrossfadeEngine(
         onBufferReady()
 
         // 2. Start incoming player immediately
-        incomingPlayer.seekTo(0)
-        incomingPlayer.volume = 0f
-        incomingPlayer.playWhenReady = true
-        incomingPlayer.play()
+        val actualDur = durationMs.coerceIn(0L, 5000L)
+        try {
+            incomingPlayer.seekTo(0)
+            incomingPlayer.volume = if (actualDur <= 40L) userVolume else 0f
+            incomingPlayer.playWhenReady = true
+            incomingPlayer.play()
+        } catch (_: Exception) {}
 
-        val actualDur = durationMs.coerceIn(50L, 250L)
         if (actualDur <= 40L) {
             performInstantSwitch(outgoingPlayer, incomingPlayer)
+            isCrossfading = false
             onComplete()
             return
         }
 
         crossfadeJob = ensureActiveScope().launch {
             try {
-                // 3. Execute snappy 200ms equal-power crossfade
-                performCrossfade(outgoingPlayer, incomingPlayer, actualDur)
+                performCrossfade(outgoingPlayer, incomingPlayer, actualDur, transitionId)
             } finally {
-                incomingPlayer.volume = userVolume
-                isCrossfading = false
-                onComplete()
+                if (transitionId == currentTransitionId) {
+                    incomingPlayer.volume = userVolume
+                    isCrossfading = false
+                    onComplete()
+                }
             }
         }
     }
@@ -301,6 +325,7 @@ class CrossfadeEngine(
     }
 
     fun cancelCrossfade() {
+        ++currentTransitionId
         crossfadeJob?.cancel()
         preloadJob?.cancel()
         crossfadeJob = null
@@ -308,24 +333,8 @@ class CrossfadeEngine(
         isCrossfading = false
         isPreloading = false
 
-        // Stop and clear any outgoing player so audio never keeps playing in the background
-        currentOutgoingPlayer?.let {
-            if (it != activePlayer) {
-                it.volume = 0f
-                it.stop()
-                it.clearMediaItems()
-            }
-        }
-        currentIncomingPlayer?.let {
-            if (it != activePlayer) {
-                it.volume = 0f
-                it.stop()
-                it.clearMediaItems()
-            }
-        }
         currentOutgoingPlayer = null
         currentIncomingPlayer = null
-
         activePlayer?.volume = userVolume
     }
 

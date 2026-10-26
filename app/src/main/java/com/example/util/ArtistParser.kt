@@ -132,9 +132,9 @@ object ArtistParser {
         "(?i)[\\(\\[]\\s*(?:feat\\.?|ft\\.?|featuring|with)\\s+([^\\]\\)]+)[\\)\\]]"
     )
 
-    // Regex for splitting non-protected composite artist tags (includes ~ and unicode tildes delimiter)
+    // Regex for splitting non-protected composite artist tags (includes ~, ～, 〜, ⁓, ∼ delimiters)
     private val DELIMITER_REGEX = Regex(
-        "(?i)\\s*(?:~|～|〜|;|/|\\\\|\\band\\b|&|\\bfeat\\.?\\b|\\bft\\.?\\b|\\bfeaturing\\b|\\bwith\\b|\\bw/\\b|\\s+x\\s+|\\s+X\\s+|\\bvs\\.?\\b|,)\\s*"
+        "(?i)\\s*(?:~|～|〜|⁓|∼|;|/|\\\\|\\band\\b|&|\\bfeat\\.?\\b|\\bft\\.?\\b|\\bfeaturing\\b|\\bwith\\b|\\bw/\\b|\\s+x\\s+|\\s+X\\s+|\\bvs\\.?\\b|,)\\s*"
     )
 
     // Ultra-fast memory cache for parsed artist lists
@@ -164,6 +164,8 @@ object ArtistParser {
         val hasDelimiter = trimmed.contains('~') ||
                 trimmed.contains('～') ||
                 trimmed.contains('〜') ||
+                trimmed.contains('⁓') ||
+                trimmed.contains('∼') ||
                 trimmed.contains(',') ||
                 trimmed.contains('&') ||
                 trimmed.contains(';') ||
@@ -283,6 +285,7 @@ object ArtistParser {
             .removeSurrounding(")")
             .removeSurrounding("[")
             .removeSurrounding("]")
+            .trim(' ', '~', '～', '〜', '⁓', '∼', '-', '/')
             .trim()
     }
 

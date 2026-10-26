@@ -87,119 +87,86 @@ object ArtistImageRepository {
         artistName: String,
         trackTitle: String? = null,
         albumName: String? = null,
-        genre: String? = null
+        genre: String? = null,
+        forceRefresh: Boolean = false
     ): String? = withContext(Dispatchers.IO) {
         val clean = artistName.trim().lowercase()
-        inMemoryCache[clean]?.let { return@withContext it }
 
-        // 1. Check local persistent storage (filesDir - immune to 'Borrar caché')
-        if (PersistentArtistStore.hasValidLocalPhoto(artistName)) {
-            val path = PersistentArtistStore.getLocalPhotoFile(artistName).absolutePath
-            inMemoryCache[clean] = path
-            return@withContext path
-        }
+        if (!forceRefresh) {
+            inMemoryCache[clean]?.let { return@withContext it }
 
-        // 2. Check in-memory from ArtistInfoFetcher
-        val infoCached = ArtistInfoFetcher.getCachedArtistInfo(artistName)?.imageUrl
-        if (!infoCached.isNullOrBlank()) {
-            inMemoryCache[clean] = infoCached
-            return@withContext infoCached
-        }
-
-        // 3. Check Room Database (only accept non-blank image URLs)
-        val cached = dao?.getArtist(artistName)
-        if (cached != null) {
-            if (!cached.localImagePath.isNullOrBlank() && java.io.File(cached.localImagePath).exists()) {
-                inMemoryCache[clean] = cached.localImagePath
-                return@withContext cached.localImagePath
+            // 1. Check local persistent storage
+            if (PersistentArtistStore.hasValidLocalPhoto(artistName)) {
+                val path = PersistentArtistStore.getLocalPhotoFile(artistName).absolutePath
+                inMemoryCache[clean] = path
+                return@withContext path
             }
-            if (!cached.imageUrl.isNullOrBlank()) {
-                inMemoryCache[clean] = cached.imageUrl
-                return@withContext cached.imageUrl
+
+            // 2. Check in-memory from ArtistInfoFetcher
+            val infoCached = ArtistInfoFetcher.getCachedArtistInfo(artistName)?.imageUrl
+            if (!infoCached.isNullOrBlank()) {
+                inMemoryCache[clean] = infoCached
+                return@withContext infoCached
+            }
+
+            // 3. Check Room Database
+            val cached = dao?.getArtist(artistName)
+            if (cached != null) {
+                if (!cached.localImagePath.isNullOrBlank() && java.io.File(cached.localImagePath).exists()) {
+                    inMemoryCache[clean] = cached.localImagePath
+                    return@withContext cached.localImagePath
+                }
+                if (!cached.imageUrl.isNullOrBlank()) {
+                    inMemoryCache[clean] = cached.imageUrl
+                    return@withContext cached.imageUrl
+                }
             }
         }
 
         var imageUrl: String? = null
         val targetNorm = ArtistInfoFetcher.normalizeArtistName(artistName)
 
-        // 3. Priority Track & Album Verification Search (Deezer)
-        if (!albumName.isNullOrBlank() || !trackTitle.isNullOrBlank() || !genre.isNullOrBlank()) {
-            val queries = mutableListOf<String>()
-            if (!albumName.isNullOrBlank() && albumName != "<unknown>" && albumName != "Unknown Album") {
-                queries.add("artist:\"$artistName\" album:\"$albumName\"")
-            }
-            if (!trackTitle.isNullOrBlank() && trackTitle != "<unknown>") {
-                queries.add("artist:\"$artistName\" track:\"$trackTitle\"")
-            }
-            if (!genre.isNullOrBlank() && genre != "<unknown>" && genre != "Unknown") {
-                queries.add("artist:\"$artistName\" \"$genre\"")
-            }
-
-            for (q in queries) {
-                try {
-                    val encoded = java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")
-                    val url = URL("https://api.deezer.com/search?q=$encoded&limit=4")
-                    val connection = (url.openConnection() as HttpURLConnection).apply {
-                        requestMethod = "GET"
-                        setRequestProperty("Accept", "application/json")
-                        connectTimeout = 2500
-                        readTimeout = 2500
-                    }
-                    if (connection.responseCode == 200) {
-                        val response = connection.inputStream.bufferedReader().use { it.readText() }
-                        val json = JSONObject(response)
-                        val dataArray = json.optJSONArray("data")
-                        if (dataArray != null && dataArray.length() > 0) {
-                            for (i in 0 until dataArray.length()) {
-                                val trackObj = dataArray.getJSONObject(i)
-                                val aObj = trackObj.optJSONObject("artist") ?: continue
-                                val candName = aObj.optString("name", "")
-                                if (ArtistInfoFetcher.normalizeArtistName(candName) == targetNorm) {
-                                    val pic = aObj.optString("picture_xl").takeIf { it.isNotBlank() }
-                                        ?: aObj.optString("picture_big").takeIf { it.isNotBlank() }
-                                        ?: aObj.optString("picture_medium").takeIf { it.isNotBlank() }
-                                    if (pic != null) {
-                                        imageUrl = pic
-                                        break
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Ignore and try next
-                }
-                if (imageUrl != null) break
-            }
+        // 3. Priority Track & Album Verification Search (Deezer) with Exact Anchors
+        val queries = mutableListOf<String>()
+        if (!albumName.isNullOrBlank() && albumName != "<unknown>" && albumName != "Unknown Album") {
+            queries.add("artist:\"$artistName\" album:\"$albumName\"")
+        }
+        if (!trackTitle.isNullOrBlank() && trackTitle != "<unknown>") {
+            queries.add("artist:\"$artistName\" track:\"$trackTitle\"")
+        }
+        if (!albumName.isNullOrBlank() && !trackTitle.isNullOrBlank()) {
+            queries.add("$artistName $albumName")
+        }
+        if (!genre.isNullOrBlank() && genre != "<unknown>" && genre != "Unknown") {
+            queries.add("artist:\"$artistName\" \"$genre\"")
         }
 
-        // 4. Deezer Artist Search with Disambiguation
-        if (imageUrl == null) {
+        for (q in queries) {
             try {
-                val encodedName = java.net.URLEncoder.encode(artistName, "UTF-8").replace("+", "%20")
-                val url = URL("https://api.deezer.com/search/artist?q=$encodedName&limit=10")
+                val encoded = java.net.URLEncoder.encode(q, "UTF-8").replace("+", "%20")
+                val url = URL("https://api.deezer.com/search?q=$encoded&limit=6")
                 val connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     setRequestProperty("Accept", "application/json")
-                    connectTimeout = 2500
-                    readTimeout = 2500
+                    connectTimeout = 3000
+                    readTimeout = 3000
                 }
-                
                 if (connection.responseCode == 200) {
                     val response = connection.inputStream.bufferedReader().use { it.readText() }
                     val json = JSONObject(response)
                     val dataArray = json.optJSONArray("data")
                     if (dataArray != null && dataArray.length() > 0) {
                         for (i in 0 until dataArray.length()) {
-                            val cand = dataArray.getJSONObject(i)
-                            val candName = cand.optString("name", "")
-                            val candNorm = ArtistInfoFetcher.normalizeArtistName(candName)
-                            
-                            // Prevent false positive suffix matches (e.g. Soap&Skin when searching Soap)
-                            if (candNorm == targetNorm || candName.equals(artistName, ignoreCase = true)) {
-                                val pic = cand.optString("picture_xl").takeIf { it.isNotBlank() }
-                                    ?: cand.optString("picture_big").takeIf { it.isNotBlank() }
-                                    ?: cand.optString("picture_medium").takeIf { it.isNotBlank() }
+                            val trackObj = dataArray.getJSONObject(i)
+                            val aObj = trackObj.optJSONObject("artist") ?: continue
+                            val candName = aObj.optString("name", "")
+                            if (ArtistInfoFetcher.normalizeArtistName(candName) == targetNorm ||
+                                candName.equals(artistName, ignoreCase = true) ||
+                                candName.contains(artistName, ignoreCase = true)
+                            ) {
+                                val pic = aObj.optString("picture_xl").takeIf { it.isNotBlank() }
+                                    ?: aObj.optString("picture_big").takeIf { it.isNotBlank() }
+                                    ?: aObj.optString("picture_medium").takeIf { it.isNotBlank() }
                                 if (pic != null) {
                                     imageUrl = pic
                                     break
@@ -208,12 +175,72 @@ object ArtistImageRepository {
                         }
                     }
                 }
+            } catch (_: Exception) {}
+            if (imageUrl != null) break
+        }
+
+        // 4. Deezer Artist Search with Disambiguation by Popularity (nb_fan)
+        if (imageUrl == null) {
+            try {
+                val encodedName = java.net.URLEncoder.encode(artistName, "UTF-8").replace("+", "%20")
+                val url = URL("https://api.deezer.com/search/artist?q=$encodedName&limit=15")
+                val connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/json")
+                    connectTimeout = 3000
+                    readTimeout = 3000
+                }
+                
+                if (connection.responseCode == 200) {
+                    val response = connection.inputStream.bufferedReader().use { it.readText() }
+                    val json = JSONObject(response)
+                    val dataArray = json.optJSONArray("data")
+                    if (dataArray != null && dataArray.length() > 0) {
+                        var bestCandidatePic: String? = null
+                        var maxFans = -1
+                        for (i in 0 until dataArray.length()) {
+                            val cand = dataArray.getJSONObject(i)
+                            val candName = cand.optString("name", "")
+                            val candNorm = ArtistInfoFetcher.normalizeArtistName(candName)
+                            val fans = cand.optInt("nb_fan", 0)
+                            
+                            // Check exact or closest match
+                            if (candNorm == targetNorm || candName.equals(artistName, ignoreCase = true)) {
+                                val pic = cand.optString("picture_xl").takeIf { it.isNotBlank() }
+                                    ?: cand.optString("picture_big").takeIf { it.isNotBlank() }
+                                    ?: cand.optString("picture_medium").takeIf { it.isNotBlank() }
+                                if (pic != null && fans >= maxFans) {
+                                    maxFans = fans
+                                    bestCandidatePic = pic
+                                }
+                            }
+                        }
+                        if (bestCandidatePic != null) {
+                            imageUrl = bestCandidatePic
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("ArtistImageRepository", "Deezer artist fetch failed: ${e.message}")
             }
         }
 
-        // 5. Save only valid non-null images permanently to filesDir and Room
+        // 5. TheAudioDB Fallback Search if Deezer failed
+        if (imageUrl == null) {
+            try {
+                val audioDb = ArtistBioRepository.getArtistBiographyResult(
+                    artistName = artistName,
+                    trackTitle = trackTitle,
+                    albumName = albumName,
+                    genre = genre
+                )
+                if (audioDb != null) {
+                    imageUrl = audioDb.fanartUrl ?: audioDb.thumbUrl
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 6. Save only valid non-null images permanently to filesDir and Room
         if (imageUrl != null) {
             val permanentPath = PersistentArtistStore.ensurePermanentPhoto(artistName, imageUrl) ?: imageUrl
             inMemoryCache[clean] = permanentPath

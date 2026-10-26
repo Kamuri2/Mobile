@@ -13,12 +13,13 @@ fun getFontFamily(fontName: String): FontFamily {
     if (clean.isBlank() || clean.startsWith("System", ignoreCase = true)) {
         return FontFamily.Default
     }
-    return when (clean.lowercase()) {
+    val normalized = clean.lowercase().replace(" ", "_").replace("-", "_")
+    return when (normalized) {
         "outfit" -> FontFamily(Font(R.font.outfit))
         "poppins" -> FontFamily(Font(R.font.poppins))
         "montserrat" -> FontFamily(Font(R.font.montserrat))
         "inter" -> FontFamily(Font(R.font.inter))
-        "playfair display", "playfair_display" -> FontFamily(Font(R.font.playfair_display))
+        "playfair_display", "playfair" -> FontFamily(Font(R.font.playfair_display))
         "roboto" -> FontFamily(Font(R.font.roboto))
         "lato" -> FontFamily(Font(R.font.lato))
         "oswald" -> FontFamily(Font(R.font.oswald))
