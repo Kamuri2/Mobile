@@ -7,8 +7,14 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 
 class MusicApplication : Application(), ImageLoaderFactory {
+    companion object {
+        lateinit var instance: MusicApplication
+            private set
+    }
+
     override fun onCreate() {
         super.onCreate()
+        instance = this
         com.example.data.PersistentArtistStore.init(this)
         com.example.data.ArtistImageRepository.init(this)
         com.example.data.ArtistInfoFetcher.init(this)

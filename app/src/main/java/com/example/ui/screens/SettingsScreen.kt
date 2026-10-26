@@ -41,6 +41,16 @@ import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.DeleteOutline
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.example.util.GoogleFontsManager
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -90,7 +100,13 @@ fun SettingsScreen(
     onStartTour: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var fontInput by remember { mutableStateOf("") }
+    var isDownloadingFont by remember { mutableStateOf(false) }
+    var downloadingFontName by remember { mutableStateOf<String?>(null) }
+    var selectedCategory by remember { mutableStateOf("Todas") }
+    var fontRefreshKey by remember { mutableStateOf(0) }
     val primaryColor = MaterialTheme.colorScheme.primary
     val lang = settings.appLanguage
 
@@ -615,7 +631,7 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 3. Typography Card
+        // 3. Typography & Google Fonts API Integration Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -628,78 +644,60 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .padding(20.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.FontDownload,
-                        contentDescription = null,
-                        tint = primaryColor,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = Translations.get(lang, "typography_title"),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textColorPrimary
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
+                // Header with Google Fonts indicator
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
-                        Text(text = Translations.get(lang, "current_font"), fontSize = 12.sp, color = textColorMuted)
-                        Text(
-                            text = settings.fontFamilyName,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = textColorPrimary
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(primaryColor.copy(alpha = 0.18f))
+                                .border(1.dp, primaryColor.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FontDownload,
+                                contentDescription = null,
+                                tint = primaryColor,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = Translations.get(lang, "typography_title"),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textColorPrimary
+                            )
+                            Text(
+                                text = "Google Fonts API • En vivo",
+                                fontSize = 11.sp,
+                                color = primaryColor,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
 
+                    // Current Active Font Badge
                     if (settings.fontFamilyName != "System Font (Default)") {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0x33FF4D4D))
-                                .border(1.dp, Color(0x66FF4D4D), RoundedCornerShape(10.dp))
+                                .background(Color(0x22FF4D4D))
+                                .border(1.dp, Color(0x55FF4D4D), RoundedCornerShape(10.dp))
                                 .clickable { onUpdateSettings(settings.copy(fontFamilyName = "System Font (Default)")) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Text(Translations.get(lang, "reset"), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFF6B6B))
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Fast Font Presets
-                Text(text = Translations.get(lang, "popular_fonts"), fontSize = 12.sp, color = textColorSecondary)
-                Spacer(modifier = Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val presets = listOf("System Font (Default)", "Outfit", "Poppins", "Montserrat", "Inter", "Playfair Display", "Roboto", "Lato", "Oswald", "Raleway", "Pacifico")
-                    presets.forEach { fontName ->
-                        val isCur = settings.fontFamilyName == fontName
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (isCur) primaryColor.copy(alpha = 0.25f) else formatPillBg)
-                                .border(1.dp, if (isCur) primaryColor else cardBorder, RoundedCornerShape(10.dp))
-                                .clickable { onUpdateSettings(settings.copy(fontFamilyName = fontName)) }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
                             Text(
-                                text = if (fontName.contains("(")) Translations.get(lang, "system_default") else fontName,
-                                fontSize = 12.sp,
-                                fontWeight = if (isCur) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isCur) primaryColor else textColorPrimary
+                                text = Translations.get(lang, "reset"),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFFF6B6B)
                             )
                         }
                     }
@@ -707,7 +705,100 @@ fun SettingsScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Custom font input
+                // Active Font Details Pill
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (isDark) Color(0x18FFFFFF) else Color(0x0A000000))
+                        .border(1.dp, cardBorder, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = Translations.get(lang, "current_font"),
+                                fontSize = 11.sp,
+                                color = textColorMuted
+                            )
+                            Text(
+                                text = settings.fontFamilyName,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textColorPrimary
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(primaryColor.copy(alpha = 0.2f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = "ACTIVA",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = primaryColor
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Google Fonts Search & Download Bar
+                Text(
+                    text = "Buscar o ingresar fuente de Google Fonts",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = textColorSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val onApplyOrDownloadFont: (String) -> Unit = { rawName ->
+                    val targetName = rawName.trim()
+                    if (targetName.isNotBlank() && !isDownloadingFont) {
+                        if (targetName.equals("System Font (Default)", ignoreCase = true)) {
+                            onUpdateSettings(settings.copy(fontFamilyName = "System Font (Default)"))
+                        } else if (GoogleFontsManager.isFontInstalledLocally(context, targetName)) {
+                            onUpdateSettings(settings.copy(fontFamilyName = targetName))
+                            Toast.makeText(context, "Fuente '$targetName' aplicada", Toast.LENGTH_SHORT).show()
+                            fontInput = ""
+                        } else {
+                            coroutineScope.launch {
+                                isDownloadingFont = true
+                                downloadingFontName = targetName
+                                val res = GoogleFontsManager.downloadFontFromGoogle(context, targetName)
+                                isDownloadingFont = false
+                                downloadingFontName = null
+                                res.fold(
+                                    onSuccess = {
+                                        onUpdateSettings(settings.copy(fontFamilyName = targetName))
+                                        Toast.makeText(
+                                            context,
+                                            "Fuente '$targetName' descargada desde Google Fonts y aplicada",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        fontRefreshKey++
+                                        fontInput = ""
+                                    },
+                                    onFailure = { err ->
+                                        Toast.makeText(
+                                            context,
+                                            err.message ?: "No se pudo descargar la fuente '$targetName'",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -715,7 +806,33 @@ fun SettingsScreen(
                     OutlinedTextField(
                         value = fontInput,
                         onValueChange = { fontInput = it },
-                        placeholder = { Text(Translations.get(lang, "font_placeholder"), color = textColorMuted, fontSize = 13.sp) },
+                        placeholder = {
+                            Text(
+                                text = "Ej. Pacifico, Lobster, Bangers, Lora...",
+                                color = textColorMuted,
+                                fontSize = 13.sp
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "Search",
+                                tint = primaryColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        },
+                        trailingIcon = {
+                            if (fontInput.isNotBlank()) {
+                                IconButton(onClick = { fontInput = "" }, modifier = Modifier.size(28.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Clear",
+                                        tint = textColorMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedContainerColor = if (isDark) Color(0x1AFFFFFF) else Color(0x08000000),
                             unfocusedContainerColor = if (isDark) Color(0x14FFFFFF) else Color(0x05000000),
@@ -731,23 +848,183 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.width(8.dp))
 
+                    val isTargetLocallyInstalled = remember(fontInput, fontRefreshKey) {
+                        fontInput.isNotBlank() && GoogleFontsManager.isFontInstalledLocally(context, fontInput.trim())
+                    }
+
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(12.dp))
-                            .background(if (fontInput.isNotBlank()) primaryColor else if (isDark) Color(0x33FFFFFF) else Color(0x22000000))
-                            .clickable(enabled = fontInput.isNotBlank()) {
-                                onUpdateSettings(settings.copy(fontFamilyName = fontInput.trim()))
-                                fontInput = ""
+                            .background(
+                                if (fontInput.isNotBlank() && !isDownloadingFont) primaryColor
+                                else if (isDark) Color(0x33FFFFFF) else Color(0x22000000)
+                            )
+                            .clickable(enabled = fontInput.isNotBlank() && !isDownloadingFont) {
+                                onApplyOrDownloadFont(fontInput)
                             }
-                            .padding(horizontal = 16.dp, vertical = 15.dp),
+                            .padding(horizontal = 14.dp, vertical = 15.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = Translations.get(lang, "apply"),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (fontInput.isNotBlank()) Color.Black else textColorMuted
-                        )
+                        if (isDownloadingFont && downloadingFontName.equals(fontInput.trim(), ignoreCase = true)) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.Black
+                            )
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (isTargetLocallyInstalled) Icons.Default.Check else Icons.Default.CloudDownload,
+                                    contentDescription = null,
+                                    tint = if (fontInput.isNotBlank()) Color.Black else textColorMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = if (isTargetLocallyInstalled) Translations.get(lang, "apply") else "Descargar",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (fontInput.isNotBlank()) Color.Black else textColorMuted
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Category Filter Tabs
+                val categories = listOf("Todas", "Sans-Serif", "Serif", "Display", "Handwriting", "Monospace", "Descargadas")
+                Text(
+                    text = "Categorías y Catálogo Google Fonts",
+                    fontSize = 12.sp,
+                    color = textColorSecondary
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    categories.forEach { cat ->
+                        val isCatSelected = selectedCategory == cat
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isCatSelected) primaryColor.copy(alpha = 0.28f) else formatPillBg)
+                                .border(1.dp, if (isCatSelected) primaryColor else cardBorder, RoundedCornerShape(8.dp))
+                                .clickable { selectedCategory = cat }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                text = cat,
+                                fontSize = 11.sp,
+                                fontWeight = if (isCatSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isCatSelected) primaryColor else textColorSecondary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Catalog & Bundled Fonts Grid
+                val downloadedFontsList = remember(fontRefreshKey) {
+                    GoogleFontsManager.getDownloadedFonts(context)
+                }
+
+                val allDisplayFonts = remember(selectedCategory, fontInput, fontRefreshKey) {
+                    val pool = mutableListOf<com.example.util.GoogleFontMeta>()
+                    // Always start with System Font
+                    pool.add(com.example.util.GoogleFontMeta("System Font (Default)", "Sans-Serif", isBundled = true))
+                    // Add bundled fonts
+                    pool.addAll(GoogleFontsManager.BUNDLED_FONTS)
+                    // Add catalog fonts
+                    pool.addAll(GoogleFontsManager.CATALOG_FONTS)
+                    // Add any downloaded fonts not already in pool
+                    downloadedFontsList.forEach { dlName ->
+                        if (pool.none { it.familyName.equals(dlName, ignoreCase = true) }) {
+                            pool.add(com.example.util.GoogleFontMeta(dlName, "Descargadas", isBundled = false))
+                        }
+                    }
+
+                    pool.filter { fontMeta ->
+                        val matchesCat = when (selectedCategory) {
+                            "Todas" -> true
+                            "Descargadas" -> downloadedFontsList.any { it.equals(fontMeta.familyName, ignoreCase = true) }
+                            else -> fontMeta.category.equals(selectedCategory, ignoreCase = true)
+                        }
+                        val matchesQuery = fontInput.isBlank() || fontMeta.familyName.contains(fontInput.trim(), ignoreCase = true)
+                        matchesCat && matchesQuery
+                    }
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    allDisplayFonts.forEach { fontMeta ->
+                        val fontName = fontMeta.familyName
+                        val isCurrent = settings.fontFamilyName.equals(fontName, ignoreCase = true)
+                        val isInstalled = fontMeta.isBundled ||
+                            fontName.equals("System Font (Default)", ignoreCase = true) ||
+                            downloadedFontsList.any { it.equals(fontName, ignoreCase = true) }
+                        val isDownloadingThis = isDownloadingFont && downloadingFontName.equals(fontName, ignoreCase = true)
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(
+                                    if (isCurrent) primaryColor.copy(alpha = 0.25f)
+                                    else if (isInstalled) formatPillBg
+                                    else if (isDark) Color(0x0FFFFFFF) else Color(0x06000000)
+                                )
+                                .border(
+                                    1.dp,
+                                    if (isCurrent) primaryColor
+                                    else if (isInstalled) cardBorder
+                                    else primaryColor.copy(alpha = 0.35f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                                .clickable(enabled = !isDownloadingFont) {
+                                    onApplyOrDownloadFont(fontName)
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (isDownloadingThis) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = primaryColor
+                                    )
+                                } else if (isCurrent) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = primaryColor,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                } else if (!isInstalled) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudDownload,
+                                        contentDescription = null,
+                                        tint = primaryColor.copy(alpha = 0.75f),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+
+                                Text(
+                                    text = if (fontName.contains("(")) Translations.get(lang, "system_default") else fontName,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isCurrent) primaryColor else textColorPrimary
+                                )
+                            }
+                        }
                     }
                 }
             }

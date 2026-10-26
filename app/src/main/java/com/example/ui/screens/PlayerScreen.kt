@@ -335,150 +335,86 @@ fun PlayerScreen(
                         .padding(horizontal = 24.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                // LEFT SIDE: Cover, Title, Artist - Album, and Actions
-                Column(
+                // LEFT SIDE: Cover with sleek floating corner actions matching portrait format
+                Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(0.95f)
                         .fillMaxHeight()
                         .padding(end = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    contentAlignment = Alignment.Center
                 ) {
-                    // Artwork Cover
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(0.91f)
+                            .fillMaxHeight(0.92f)
                             .aspectRatio(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0x1AFFFFFF)),
-                        contentAlignment = Alignment.Center
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(if (isDarkMode) Color(0x18FFFFFF) else Color(0x0C000000))
                     ) {
                         if (currentTrack != null) {
-                            com.example.ui.components.PlayerAlbumArt(track = currentTrack, modifier = Modifier.fillMaxSize())
+                            com.example.ui.components.PlayerAlbumArt(
+                                track = currentTrack,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
                         } else {
-                            Icon(imageVector = Icons.Default.MusicNote, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(96.dp))
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = Color.Gray,
+                                modifier = Modifier.size(96.dp).align(Alignment.Center)
+                            )
                         }
-                        
-                        // Action Icons Row overlaid at the bottom of the album art
+
+                        // Floating action buttons matching portrait mode (Add to playlist and Lyrics)
                         Row(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .background(
-                                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.70f))
-                                    )
-                                )
-                                .padding(vertical = 8.dp, horizontal = 14.dp),
+                                .padding(12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(onClick = onFavoriteToggle, modifier = Modifier.testTag("player_favorite_btn")) {
-                                Icon(
-                                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                    contentDescription = "Favorite",
-                                    tint = if (isFavorite) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-
-                            IconButton(onClick = onDislikeToggle) {
-                                Icon(
-                                    imageVector = if (isDisliked) Icons.Default.ThumbDown else Icons.Default.ThumbDownOffAlt,
-                                    contentDescription = "Dislike",
-                                    tint = if (isDisliked) Color(0xFFEF4444) else Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-
-                            IconButton(onClick = { showAddToPlaylistModal = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.Add,
-                                    contentDescription = "Add to playlist",
-                                    tint = Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(26.dp)
-                                )
-                            }
-
-                            // Lyrics Mic Icon Toggle
                             Box(
                                 modifier = Modifier
                                     .size(38.dp)
                                     .clip(CircleShape)
-                                    .background(if (showLyricsMode) Color.White.copy(alpha = 0.35f) else Color.Transparent)
+                                    .background(Color.Black.copy(alpha = 0.40f))
+                                    .clickable { showAddToPlaylistModal = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Add to playlist",
+                                    tint = Color.White.copy(alpha = 0.95f),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(if (showLyricsMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.40f))
                                     .clickable { showLyricsMode = !showLyricsMode },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Mic,
                                     contentDescription = "Lyrics",
-                                    tint = if (showLyricsMode) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.85f),
+                                    tint = if (showLyricsMode) Color.Black else Color.White.copy(alpha = 0.95f),
                                     modifier = Modifier.size(20.dp)
-                                )
-                            }
-
-                            IconButton(onClick = onOpenQueue, modifier = Modifier.testTag("player_queue_btn")) {
-                                Icon(
-                                    imageVector = Icons.Default.QueueMusic,
-                                    contentDescription = "Queue",
-                                    tint = Color.White.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(22.dp)
                                 )
                             }
                         }
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Song Title & Artist - Album
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
-                    ) {
-                        val noTrackText = com.example.ui.Translations.get(settings.appLanguage, "no_track_playing")
-                        val unknownArtistText = com.example.ui.Translations.get(settings.appLanguage, "unknown_artist")
-                        val unknownAlbumText = com.example.ui.Translations.get(settings.appLanguage, "unknown_album")
-                        Text(
-                            text = currentTrack?.title ?: noTrackText,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = primaryTextColor,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .basicMarquee(
-                                    iterations = Int.MAX_VALUE,
-                                    initialDelayMillis = 1500,
-                                    repeatDelayMillis = 1000
-                                )
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "${currentTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: unknownArtistText} - ${currentTrack?.album?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: unknownAlbumText}",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Normal,
-                            color = secondaryTextColor,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .basicMarquee(
-                                    iterations = Int.MAX_VALUE,
-                                    initialDelayMillis = 2000,
-                                    repeatDelayMillis = 1000
-                                )
-                        )
-                    }
-
                 }
+
                 // RIGHT SIDE: Playback Controls OR Lyrics Display
                 Box(
                     modifier = Modifier
-                        .weight(1f)
+                        .weight(1.05f)
                         .fillMaxHeight()
-                        .padding(start = 16.dp),
+                        .padding(start = 12.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     if (!showLyricsMode) {
@@ -486,146 +422,179 @@ fun PlayerScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(vertical = 8.dp),
-                            verticalArrangement = Arrangement.Center,
+                                .padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalArrangement = Arrangement.SpaceEvenly,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            // Main Playback Controls Row (Rewind 10s, Previous, Big Play/Pause, Next, Forward 10s)
+                            // 1. Song Title & Artist
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                            ) {
+                                val noTrackText = com.example.ui.Translations.get(settings.appLanguage, "no_track_playing")
+                                val unknownArtistText = com.example.ui.Translations.get(settings.appLanguage, "unknown_artist")
+                                Text(
+                                    text = currentTrack?.title ?: noTrackText,
+                                    fontSize = 22.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = primaryTextColor,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Clip,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .basicMarquee(iterations = Int.MAX_VALUE)
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = currentTrack?.artist?.takeIf { it.isNotBlank() && it != "<unknown>" } ?: unknownArtistText,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Normal,
+                                    color = secondaryTextColor,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Clip,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .basicMarquee(iterations = Int.MAX_VALUE)
+                                )
+                            }
+
+                            // 2. Standard Progress Bar (Identical format to vertical mode)
+                            StandardPlayerProgressBar(
+                                effectiveDuration = effectiveDuration,
+                                displayPositionMs = displayPositionMs,
+                                durationMs = durationMs,
+                                currentProgress = currentProgress,
+                                isDarkMode = isDarkMode,
+                                primaryTextColor = primaryTextColor,
+                                onSeek = onSeek,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp)
+                            )
+
+                            // 3. Playback Controls Row:
+                            // Shuffle and Repeat replace outer 10s buttons as requested
+                            val controlsBtnColor = if (isDarkMode) Color.White else Color.Black
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 6.dp),
                                 horizontalArrangement = Arrangement.SpaceEvenly,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                IconButton(onClick = { onSeek((currentPositionMs - 10000L).coerceAtLeast(0L)) }) {
+                                // Shuffle (Leftmost - replaced 10s rewind)
+                                IconButton(onClick = onShuffleToggle, modifier = Modifier.size(46.dp)) {
                                     Icon(
-                                        imageVector = Icons.Default.FastRewind,
-                                        contentDescription = "Rewind 10s",
-                                        tint = iconTintColor.copy(alpha = 0.75f),
-                                        modifier = Modifier.size(30.dp)
+                                        imageVector = Icons.Default.Shuffle,
+                                        contentDescription = "Shuffle",
+                                        tint = if (isShuffle) MaterialTheme.colorScheme.primary else controlsBtnColor.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(24.dp)
                                     )
                                 }
-                            Spacer(modifier = Modifier.height(24.dp))
-                                IconButton(onClick = { slideDirection = -1; onPrevious() }) {
+
+                                // Previous
+                                IconButton(
+                                    onClick = { slideDirection = -1; skipTrigger++; onPrevious() },
+                                    modifier = Modifier.size(54.dp).testTag("previous_button")
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.FastRewind,
                                         contentDescription = "Previous",
-                                        tint = iconTintColor,
-                                        modifier = Modifier.size(42.dp)
+                                        tint = controlsBtnColor,
+                                        modifier = Modifier.size(38.dp)
                                     )
                                 }
-                                // Play/Pause Button (White in dark mode, Black in light mode, NO circle)
+
+                                // Big Play / Pause (Clean white bars/triangle with NO circle)
                                 IconButton(
                                     onClick = onPlayPauseToggle,
-                                    modifier = Modifier
-                                        .size(68.dp)
-                                        .testTag("player_main_play_btn")
+                                    modifier = Modifier.size(66.dp).testTag("player_main_play_btn")
                                 ) {
                                     Icon(
                                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                         contentDescription = "Play/Pause",
-                                        tint = iconTintColor,
-                                        modifier = Modifier.size(56.dp)
+                                        tint = controlsBtnColor,
+                                        modifier = Modifier.size(52.dp)
                                     )
                                 }
-                                IconButton(onClick = { slideDirection = 1; onNext() }) {
+
+                                // Next
+                                IconButton(
+                                    onClick = { slideDirection = 1; skipTrigger++; onNext() },
+                                    modifier = Modifier.size(54.dp).testTag("next_button")
+                                ) {
                                     Icon(
                                         imageVector = Icons.Default.FastForward,
                                         contentDescription = "Next",
-                                        tint = iconTintColor,
-                                        modifier = Modifier.size(42.dp)
-                                    )
-                                }
-                                IconButton(onClick = { onSeek(currentPositionMs + 10000L) }) {
-                                    Icon(
-                                        imageVector = Icons.Default.FastForward,
-                                        contentDescription = "Forward 10s",
-                                        tint = iconTintColor.copy(alpha = 0.75f),
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
-                            }
-
-                            // Waveform Progress Bar with Audio Soundwaves
-                            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-                                WaveformSeekBar(
-                                    progress = currentProgress,
-                                    onProgressChange = { fraction ->
-                                        isSeeking = true
-                                        seekFraction = fraction
-                                    },
-                                    onProgressChangeFinished = {
-                                        isSeeking = false
-                                        val target = (seekFraction * effectiveDuration).toLong().coerceIn(0L, effectiveDuration)
-                                        onSeek(target)
-                                    },
-                                    isPlaying = isPlaying,
-                                    trackId = currentTrack?.id ?: 0L,
-                                    activeColor = MaterialTheme.colorScheme.primary,
-                                    height = 42.dp,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = formatDuration(displayPositionMs),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = GlassTextMuted
-                                    )
-                                    Text(
-                                        text = formatDuration(durationMs),
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = GlassTextMuted
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(24.dp))
-
-
-                            // Secondary Control Icons (Mic/Lyrics, Repeat, Shuffle)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(0.85f),
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconButton(onClick = onShuffleToggle) {
-                                    Icon(
-                                        imageVector = Icons.Default.Shuffle,
-                                        contentDescription = "Shuffle",
-                                        tint = if (isShuffle) MaterialTheme.colorScheme.primary else (if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f)),
-                                        modifier = Modifier.size(24.dp)
+                                        tint = controlsBtnColor,
+                                        modifier = Modifier.size(38.dp)
                                     )
                                 }
 
-                                // Lyrics Toggle Button (Mic)
-                                Box(
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(CircleShape)
-                                        .background(if (showLyricsMode) (if (isDarkMode) Color.White.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.15f)) else Color.Transparent)
-                                        .clickable { showLyricsMode = true },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Mic,
-                                        contentDescription = "Lyrics",
-                                        tint = if (showLyricsMode) MaterialTheme.colorScheme.primary else (if (isDarkMode) Color.White.copy(alpha = 0.8f) else Color.Black.copy(alpha = 0.8f)),
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-
-                                IconButton(onClick = onLoopCycle) {
+                                // Repeat (Rightmost - replaced 10s forward)
+                                IconButton(onClick = onLoopCycle, modifier = Modifier.size(46.dp)) {
                                     Icon(
                                         imageVector = if (loopMode == LoopMode.REPEAT_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                                         contentDescription = "Repeat",
-                                        tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.primary else (if (isDarkMode) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f)),
+                                        tint = if (loopMode != LoopMode.OFF) MaterialTheme.colorScheme.primary else controlsBtnColor.copy(alpha = 0.7f),
                                         modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+
+                            // 4. Secondary actions & Audio Quality Badge
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = onFavoriteToggle, modifier = Modifier.size(40.dp)) {
+                                    Icon(
+                                        imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = "Favorite",
+                                        tint = if (isFavorite) MaterialTheme.colorScheme.primary else controlsBtnColor.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                // Technical Audio Quality Badge (Transparent floating bubble)
+                                val audioBadgeText = remember(currentTrack) {
+                                    com.example.util.AudioMetadataHelper.getAudioQualityBadge(context, currentTrack)
+                                }
+                                if (audioBadgeText.isNotBlank()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (isDarkMode) Color(0x0CFFFFFF) else Color(0x08000000))
+                                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.GraphicEq,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Text(
+                                                text = audioBadgeText,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = primaryTextColor.copy(alpha = 0.82f),
+                                                letterSpacing = 0.5.sp
+                                            )
+                                        }
+                                    }
+                                }
+
+                                IconButton(onClick = onOpenQueue, modifier = Modifier.size(40.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Default.Menu,
+                                        contentDescription = "Queue",
+                                        tint = controlsBtnColor.copy(alpha = 0.8f),
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                             }
@@ -1112,99 +1081,18 @@ fun PlayerScreen(
                 Spacer(modifier = Modifier.height(22.dp))
 
                 // Progress Bar with Circular Thumb Indicator matching user reference image
-                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
-                    var isDragging by remember { mutableStateOf(false) }
-                    var dragFraction by remember { mutableFloatStateOf(0f) }
-                    val effectiveFraction = if (isDragging) dragFraction else currentProgress.coerceIn(0f, 1f)
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(28.dp)
-                            .pointerInput(effectiveDuration) {
-                                detectTapGestures { offset ->
-                                    val fraction = (offset.x / size.width).coerceIn(0f, 1f)
-                                    val target = (fraction * effectiveDuration).toLong()
-                                    onSeek(target)
-                                }
-                            }
-                            .pointerInput(effectiveDuration) {
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        isDragging = true
-                                        dragFraction = (offset.x / size.width).coerceIn(0f, 1f)
-                                    },
-                                    onDragEnd = {
-                                        isDragging = false
-                                        val target = (dragFraction * effectiveDuration).toLong()
-                                        onSeek(target)
-                                    },
-                                    onDragCancel = {
-                                        isDragging = false
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
-                                    }
-                                )
-                            },
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        // 1. Background Unplayed Track
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(4.5.dp)
-                                .clip(RoundedCornerShape(percent = 50))
-                                .background(if (isDarkMode) Color.White.copy(alpha = 0.32f) else Color.Black.copy(alpha = 0.18f))
-                        )
-
-                        // 2. Active Played Track
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(effectiveFraction.coerceIn(0.005f, 1f))
-                                .height(4.5.dp)
-                                .clip(RoundedCornerShape(percent = 50))
-                                .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E))
-                        )
-
-                        // 3. Circular Thumb Knob Indicator
-                        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                            val thumbDiameter = 14.dp
-                            val maxOffset = maxWidth - thumbDiameter
-                            val thumbOffset = (maxOffset * effectiveFraction).coerceIn(0.dp, maxOffset)
-
-                            Box(
-                                modifier = Modifier
-                                    .offset(x = thumbOffset)
-                                    .size(thumbDiameter)
-                                    .shadow(elevation = if (isDragging) 4.dp else 2.dp, shape = CircleShape)
-                                    .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E), CircleShape)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        val currentMs = if (isDragging) (dragFraction * effectiveDuration).toLong() else displayPositionMs
-                        Text(
-                            text = formatDuration(currentMs),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = primaryTextColor
-                        )
-                        Text(
-                            text = formatDuration(durationMs),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = primaryTextColor
-                        )
-                    }
-                }
+                StandardPlayerProgressBar(
+                    effectiveDuration = effectiveDuration,
+                    displayPositionMs = displayPositionMs,
+                    durationMs = durationMs,
+                    currentProgress = currentProgress,
+                    isDarkMode = isDarkMode,
+                    primaryTextColor = primaryTextColor,
+                    onSeek = onSeek,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                )
 
                 // Uniform breathing space between seekbar and playback controls
                 Spacer(modifier = Modifier.height(22.dp))
@@ -1753,6 +1641,112 @@ fun NowPlayingLyricsCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun StandardPlayerProgressBar(
+    effectiveDuration: Long,
+    displayPositionMs: Long,
+    durationMs: Long,
+    currentProgress: Float,
+    isDarkMode: Boolean,
+    primaryTextColor: Color,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(0f) }
+    val effectiveFraction = if (isDragging) dragFraction else currentProgress.coerceIn(0f, 1f)
+
+    Column(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(28.dp)
+                .pointerInput(effectiveDuration) {
+                    detectTapGestures { offset ->
+                        val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                        val target = (fraction * effectiveDuration).toLong()
+                        onSeek(target)
+                    }
+                }
+                .pointerInput(effectiveDuration) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            isDragging = true
+                            dragFraction = (offset.x / size.width).coerceIn(0f, 1f)
+                        },
+                        onDragEnd = {
+                            isDragging = false
+                            val target = (dragFraction * effectiveDuration).toLong()
+                            onSeek(target)
+                        },
+                        onDragCancel = {
+                            isDragging = false
+                        },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            dragFraction = (change.position.x / size.width).coerceIn(0f, 1f)
+                        }
+                    )
+                },
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // 1. Background Unplayed Track
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.5.dp)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (isDarkMode) Color.White.copy(alpha = 0.32f) else Color.Black.copy(alpha = 0.18f))
+            )
+
+            // 2. Active Played Track
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(effectiveFraction.coerceIn(0.005f, 1f))
+                    .height(4.5.dp)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E))
+            )
+
+            // 3. Circular Thumb Knob Indicator
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val thumbDiameter = 14.dp
+                val maxOffset = maxWidth - thumbDiameter
+                val thumbOffset = (maxOffset * effectiveFraction).coerceIn(0.dp, maxOffset)
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = thumbOffset)
+                        .size(thumbDiameter)
+                        .shadow(elevation = if (isDragging) 4.dp else 2.dp, shape = CircleShape)
+                        .background(if (isDarkMode) Color.White else Color(0xFF1E1E1E), CircleShape)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            val currentMs = if (isDragging) (dragFraction * effectiveDuration).toLong() else displayPositionMs
+            Text(
+                text = formatDuration(currentMs),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = primaryTextColor
+            )
+            Text(
+                text = formatDuration(durationMs),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = primaryTextColor
+            )
         }
     }
 }

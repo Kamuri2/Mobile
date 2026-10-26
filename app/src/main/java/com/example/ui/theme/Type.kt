@@ -8,29 +8,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
 
-fun getFontFamily(fontName: String): FontFamily {
-    val clean = fontName.trim()
-    if (clean.isBlank() || clean.startsWith("System", ignoreCase = true)) {
-        return FontFamily.Default
-    }
-    val normalized = clean.lowercase().replace(" ", "_").replace("-", "_")
-    return when (normalized) {
-        "outfit" -> FontFamily(Font(R.font.outfit))
-        "poppins" -> FontFamily(Font(R.font.poppins))
-        "montserrat" -> FontFamily(Font(R.font.montserrat))
-        "inter" -> FontFamily(Font(R.font.inter))
-        "playfair_display", "playfair" -> FontFamily(Font(R.font.playfair_display))
-        "roboto" -> FontFamily(Font(R.font.roboto))
-        "lato" -> FontFamily(Font(R.font.lato))
-        "oswald" -> FontFamily(Font(R.font.oswald))
-        "raleway" -> FontFamily(Font(R.font.raleway))
-        "pacifico" -> FontFamily(Font(R.font.pacifico))
-        else -> FontFamily.Default
-    }
+fun getFontFamily(fontName: String, context: android.content.Context? = null): FontFamily {
+    val ctx = context ?: try { com.example.MusicApplication.instance } catch (_: Exception) { null }
+    return com.example.util.GoogleFontsManager.loadFontFamily(ctx, fontName)
 }
 
-fun createAppTypography(fontFamilyName: String): Typography {
-    val family = getFontFamily(fontFamilyName)
+fun createAppTypography(fontFamilyName: String, context: android.content.Context? = null): Typography {
+    val family = getFontFamily(fontFamilyName, context)
 
     return Typography(
         displayLarge = TextStyle(
