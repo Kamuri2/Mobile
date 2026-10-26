@@ -12,6 +12,19 @@ data class LyricsLine(
     }
 }
 
+data class LyricGroup(
+    val timestampMs: Long,
+    val mainText: String,
+    val subLines: List<String> = emptyList()
+) {
+    fun formatTime(): String {
+        val totalSecs = timestampMs / 1000
+        val mins = totalSecs / 60
+        val secs = totalSecs % 60
+        return String.format("%02d:%02d", mins, secs)
+    }
+}
+
 object LyricsParser {
     // Matches enclosed timestamps like [00:12.50], [00:12.500], [00:12:50], <00:12.50>, [0:12.50]
     private val timestampRegex = Regex("""(?:\[|<)\s*(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\s*(?:\]|>)""")
@@ -24,6 +37,23 @@ object LyricsParser {
     // Matches ripper, encoder, or advertising residue lines
     private val residueLineRegex = Regex("""(?i)^\s*(?:Exact\s*Audio\s*Copy|LAME|Lavf|Encoded\s*by|Ripped\s*by|iTunNORM|iTunSMPB|Frame:\s*[A-Z0-9]{3,4}|[0-9a-f]{8}(?:\s+[0-9a-f]{8}){3,}|synced\s*by|lyrics\s*(?:provided\s*)?by|created\s*by|created\s*with|editor\s*:|qq\s*music|musixmatch|minilyrics|lrc\s*maker|lrc\s*generator|www\.[a-z0-9.-]+\.[a-z]{2,}|https?://|visit\s*our|all\s*rights\s*reserved|copyright\s*\(c\)|downloaded\s*from|translated\s*by|end\s*of\s*lyrics).*""")
     private val offsetRegex = Regex("""\[offset:\s*([+-]?\d+)\s*\]""", RegexOption.IGNORE_CASE)
+
+    // Voice / Karaoke tags e.g. v1:, v2:, <v1>, [v1:]
+    private val voicePrefixRegex = Regex("""(?i)^\s*<?v\d*>?:\s*""")
+    private val voiceBracketRegex = Regex("""(?i)^\s*\[\s*v\d+\s*\]\s*""")
+    private val voiceAngleRegex = Regex("""(?i)<\s*v\d+\s*>""")
+
+    fun cleanLyricLineText(rawText: String): String {
+        var text = rawText
+            .replace(timestampRegex, "")
+            .replace(syllableRegex, "")
+            .replace(metadataTagRegex, "")
+            .replace(voicePrefixRegex, "")
+            .replace(voiceBracketRegex, "")
+            .replace(voiceAngleRegex, "")
+            .trim()
+        return text
+    }
 
     fun parseLrc(lrcText: String): List<LyricsLine> {
         if (lrcText.isBlank()) return emptyList()
@@ -54,10 +84,8 @@ object LyricsParser {
             if (timeMatches.isNotEmpty()) {
                 hasAnyTimestamps = true
 
-                // Strip all timestamp tags, enhanced syllable tags, and metadata tags to extract pure lyric text
-                var cleanText = cleanLine.replace(timestampRegex, "")
-                cleanText = cleanText.replace(syllableRegex, "")
-                cleanText = cleanText.replace(metadataTagRegex, "").trim()
+                // Strip all timestamp tags, enhanced syllable tags, voice tags and metadata tags
+                var cleanText = cleanLyricLineText(cleanLine)
 
                 // If after removing timestamps and metadata tags, the line is blank or is metadata residue, skip
                 if (cleanText.isBlank() || metadataLineRegex.matches(cleanText) || residueLineRegex.matches(cleanText)) {
@@ -87,7 +115,7 @@ object LyricsParser {
                 }
             } else {
                 // If it's a section tag like [Chorus], [Verse 1] or raw text
-                var textWithoutTags = cleanLine.replace(metadataTagRegex, "").trim()
+                var textWithoutTags = cleanLyricLineText(cleanLine)
                 textWithoutTags = textWithoutTags.replace(Regex("""^\[\s*(.*?)\s*\]$"""), "$1").trim()
                 if (textWithoutTags.isNotBlank() &&
                     !metadataLineRegex.matches(textWithoutTags) &&
@@ -118,5 +146,72 @@ object LyricsParser {
             .sortedBy { it.timestampMs }
 
         return sortedLines
+    }
+
+    /**
+     * Groups multi-line karaoke/romaji/translation blocks sharing matching timestamps.
+     * Produces clean LyricGroup entries with primary bold line + secondary sub-lines.
+     */
+    fun groupByKaraokeTiers(lines: List<LyricsLine>): List<LyricGroup> {
+        if (lines.isEmpty()) return emptyList()
+        val groups = mutableListOf<LyricGroup>()
+
+        var currentGroupTime = -1L
+        var currentMainText = ""
+        val currentSubLines = mutableListOf<String>()
+
+        for (line in lines) {
+            val text = line.text.trim()
+            if (text.isBlank()) continue
+
+            // Lines within ~250ms or sharing exact timestamp represent multi-tier karaoke / romaji
+            val isSameBlock = currentGroupTime >= 0L && kotlin.math.abs(line.timestampMs - currentGroupTime) <= 250L
+
+            if (isSameBlock) {
+                currentSubLines.add(text)
+            } else {
+                if (currentGroupTime >= 0L && currentMainText.isNotBlank()) {
+                    groups.add(LyricGroup(currentGroupTime, currentMainText, currentSubLines.toList()))
+                    currentSubLines.clear()
+                }
+                currentGroupTime = line.timestampMs
+                currentMainText = text
+            }
+        }
+
+        if (currentGroupTime >= 0L && currentMainText.isNotBlank()) {
+            groups.add(LyricGroup(currentGroupTime, currentMainText, currentSubLines.toList()))
+        }
+
+        return groups
+    }
+
+    /**
+     * Strips title/artist redundancy lines at the beginning of the song so the lyrics area
+     * is strictly dedicated to actual lyrics.
+     */
+    fun filterHeaderLines(lines: List<LyricsLine>, track: Track?): List<LyricsLine> {
+        if (lines.isEmpty() || track == null) return lines
+        val titleClean = track.title.trim().lowercase()
+        val artistClean = track.artist.trim().lowercase()
+
+        return lines.filterIndexed { index, line ->
+            // Only examine the first 3 lines
+            if (index > 2) return@filterIndexed true
+            val textClean = line.text.trim().lowercase()
+            val isTitleArtistHeader = (
+                (titleClean.isNotBlank() && textClean == titleClean) ||
+                (artistClean.isNotBlank() && textClean == artistClean) ||
+                (titleClean.isNotBlank() && artistClean.isNotBlank() && (
+                    textClean == "$titleClean - $artistClean" ||
+                    textClean == "$artistClean - $titleClean" ||
+                    textClean == "$titleClean -$artistClean" ||
+                    textClean == "$artistClean -$titleClean" ||
+                    textClean.startsWith("$titleClean -") ||
+                    textClean.endsWith("- $artistClean")
+                ))
+            )
+            !isTitleArtistHeader
+        }
     }
 }

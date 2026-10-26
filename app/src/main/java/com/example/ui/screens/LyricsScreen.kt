@@ -103,27 +103,37 @@ fun LyricsScreen(
             } else ""
         }
     }
-    val parsedLyrics = remember(cleanDisplayText) { LyricsParser.parseLrc(cleanDisplayText) }
+    val parsedLyrics = remember(cleanDisplayText, currentTrack?.title, currentTrack?.artist) {
+        val lines = LyricsParser.parseLrc(cleanDisplayText)
+        LyricsParser.filterHeaderLines(lines, currentTrack)
+    }
+    val groupedLyrics = remember(parsedLyrics) {
+        LyricsParser.groupByKaraokeTiers(parsedLyrics)
+    }
+    val hasMultiTiers = remember(groupedLyrics) {
+        groupedLyrics.any { it.subLines.isNotEmpty() }
+    }
+    var showRomajiTiers by remember { mutableStateOf(true) }
 
     var showEditSheet by remember { mutableStateOf(false) }
     var editableLyricsText by remember(cleanDisplayText) { mutableStateOf(cleanDisplayText) }
 
     val listState = rememberLazyListState()
 
-    // Determine current active lyrics line based on audio position
-    val isSynced = remember(parsedLyrics) { parsedLyrics.any { it.timestampMs > 0L } }
+    // Determine current active lyrics group based on audio position
+    val isSynced = remember(groupedLyrics) { groupedLyrics.any { it.timestampMs > 0L } }
 
-    val activeLineIndex = remember(parsedLyrics, currentPositionMs, isSynced) {
-        if (parsedLyrics.isEmpty() || !isSynced) -1
+    val activeLineIndex = remember(groupedLyrics, currentPositionMs, isSynced) {
+        if (groupedLyrics.isEmpty() || !isSynced) -1
         else {
-            val idx = parsedLyrics.indexOfLast { it.timestampMs <= currentPositionMs }
+            val idx = groupedLyrics.indexOfLast { it.timestampMs <= currentPositionMs }
             if (idx != -1) idx else 0
         }
     }
 
     // Auto-scroll to active lyrics line only if synced
     LaunchedEffect(activeLineIndex, isSynced) {
-        if (isSynced && activeLineIndex in parsedLyrics.indices) {
+        if (isSynced && activeLineIndex in groupedLyrics.indices) {
             listState.animateScrollToItem((activeLineIndex - 2).coerceAtLeast(0))
         }
     }
@@ -163,6 +173,26 @@ fun LyricsScreen(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (hasMultiTiers) {
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .size(34.dp)
+                            .background(
+                                color = if (showRomajiTiers) MaterialTheme.colorScheme.primary.copy(alpha = 0.35f) else Color.White.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(percent = 50)
+                            )
+                            .clickable { showRomajiTiers = !showRomajiTiers },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "文A",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (showRomajiTiers) MaterialTheme.colorScheme.primary else Color.White
+                        )
+                    }
+                }
                 IconButton(onClick = {
                     currentTrack?.let { playerManager.retryScanTrackExtras(it) }
                 }) {
@@ -274,7 +304,7 @@ fun LyricsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                itemsIndexed(parsedLyrics) { index, line ->
+                itemsIndexed(groupedLyrics) { index, group ->
                     val isActive = index == activeLineIndex
 
                     val textColor by animateColorAsState(
@@ -292,8 +322,8 @@ fun LyricsScreen(
                         borderColor = if (isActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.15f),
                         glowColor = if (isActive) MaterialTheme.colorScheme.primary else null,
                         onClick = {
-                            if (line.timestampMs > 0) {
-                                onSeek(line.timestampMs)
+                            if (group.timestampMs > 0) {
+                                onSeek(group.timestampMs)
                             }
                         }
                     ) {
@@ -304,18 +334,31 @@ fun LyricsScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(
-                                text = line.text,
-                                fontSize = if (isActive) 18.sp else 15.sp,
-                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
-                                color = textColor,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (line.timestampMs > 0) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = line.formatTime(),
+                                    text = group.mainText,
+                                    fontSize = if (isActive) 18.sp else 15.sp,
+                                    fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Medium,
+                                    color = textColor
+                                )
+                                if (showRomajiTiers && group.subLines.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    group.subLines.forEach { subText ->
+                                        Text(
+                                            text = subText,
+                                            fontSize = if (isActive) 13.sp else 12.sp,
+                                            fontWeight = FontWeight.Normal,
+                                            color = textColor.copy(alpha = if (isActive) 0.85f else 0.6f)
+                                        )
+                                    }
+                                }
+                            }
+                            if (group.timestampMs > 0) {
+                                Text(
+                                    text = group.formatTime(),
                                     fontSize = 11.sp,
-                                    color = if (isActive) PurpleAccent else GlassTextMuted
+                                    color = if (isActive) PurpleAccent else GlassTextMuted,
+                                    modifier = Modifier.padding(start = 8.dp)
                                 )
                             }
                         }

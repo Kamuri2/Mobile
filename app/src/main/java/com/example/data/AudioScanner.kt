@@ -89,6 +89,22 @@ object AudioScanner {
                         val rawTrackNum = if (trackNumColumn >= 0) cursor.getInt(trackNumColumn) else 0
                         val trackNum = if (rawTrackNum >= 1000) rawTrackNum % 1000 else if (rawTrackNum > 0) rawTrackNum else 1
 
+                        // Filter out WhatsApp voice notes, notifications, ringtones, alarms, and tiny audio junk
+                        val lowerPath = path.lowercase()
+                        if (lowerPath.contains("whatsapp") ||
+                            lowerPath.contains("com.whatsapp") ||
+                            lowerPath.contains("/notifications/") ||
+                            lowerPath.contains("/ringtones/") ||
+                            lowerPath.contains("/alarms/") ||
+                            lowerPath.contains("/recordings/") ||
+                            lowerPath.contains("/voice notes/") ||
+                            lowerPath.contains("/call_rec/") ||
+                            lowerPath.contains(".nomedia") ||
+                            (duration > 0L && duration < 12000L) ||
+                            (sizeBytes > 0L && sizeBytes < 120 * 1024L)) {
+                            continue
+                        }
+
                         val contentUri = ContentUris.withAppendedId(collection, id)
                         // No usar album_id de MediaStore para evitar que canciones de distintos artistas con mismo álbum/título compartan portada
                         val artUri: Uri? = null

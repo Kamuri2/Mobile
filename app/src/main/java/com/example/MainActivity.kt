@@ -511,7 +511,6 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                         onPlayArtist = { artistTracks, idx -> playerManager.setQueue(artistTracks, idx) },
                         onNavigateToAlbum = { albumName ->
                             initialAlbum = albumName
-                            currentScreen = NavigationScreen.ALBUMS
                         }
                     )
 
@@ -596,6 +595,20 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                     )
                 }
                 
+                if (initialArtist != null && currentScreen != NavigationScreen.ARTISTS) {
+                    ArtistsScreen(
+                        settings = appSettings,
+                        tracks = loadedTracks,
+                        initialArtistName = initialArtist,
+                        onPlayArtist = { artistTracks, idx -> playerManager.setQueue(artistTracks, idx) },
+                        onDismissOverlay = { initialArtist = null },
+                        onNavigateToAlbum = { albumName ->
+                            initialAlbum = albumName
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
                 if (initialAlbum != null && currentScreen != NavigationScreen.ALBUMS) {
                     AlbumsScreen(
                         settings = appSettings,
@@ -624,22 +637,6 @@ fun LiquidMusicApp(playerManager: AudioPlayerManager) {
                             }
                         },
                         playlists = dbPlaylists,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                if (initialArtist != null && currentScreen != NavigationScreen.ARTISTS) {
-                    ArtistsScreen(
-                        settings = appSettings,
-                        tracks = loadedTracks,
-                        initialArtistName = initialArtist,
-                        onPlayArtist = { artistTracks, idx -> playerManager.setQueue(artistTracks, idx) },
-                        onDismissOverlay = { initialArtist = null },
-                        onNavigateToAlbum = { albumName ->
-                            initialArtist = null
-                            initialAlbum = albumName
-                            currentScreen = NavigationScreen.ALBUMS
-                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }

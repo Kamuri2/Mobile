@@ -790,11 +790,11 @@ class AudioPlayerManager private constructor(private val context: Context) {
                         _durationMs.value = dur
                     }
 
-                    // Seamless automatic crossfade when reaching song end (200ms):
-                    val crossfadeMs = 200L
-                    if (dur > 0L && !hasTriggeredAutoCrossfade && !crossfadeEngine.isCrossfading) {
+                    // Seamless automatic crossfade when reaching song end based on user setting:
+                    val crossfadeMs = (_appSettings.value.crossfadeDuration * 1000f).toLong().coerceIn(0L, 5000L)
+                    if (crossfadeMs > 40L && dur > 0L && !hasTriggeredAutoCrossfade && !crossfadeEngine.isCrossfading) {
                         val remaining = dur - pos
-                        if (remaining in 50L..crossfadeMs) {
+                        if (remaining in 40L..(crossfadeMs + 100L)) {
                             val next = getNextTrackInfo()
                             if (next != null) {
                                 hasTriggeredAutoCrossfade = true
@@ -803,7 +803,7 @@ class AudioPlayerManager private constructor(private val context: Context) {
                         }
                     }
                 }
-                delay(120L)
+                delay(80L)
             }
         }
     }
@@ -817,7 +817,8 @@ class AudioPlayerManager private constructor(private val context: Context) {
         if (crossfadeEngine.isCrossfading) return
         val next = getNextTrackInfo()
         if (next != null) {
-            crossfadeToTrack(next.first, next.second, customDurationMs = 200L)
+            val configuredMs = (_appSettings.value.crossfadeDuration * 1000f).toLong().coerceIn(0L, 5000L)
+            crossfadeToTrack(next.first, next.second, customDurationMs = if (configuredMs <= 40L) 0L else configuredMs)
         } else {
             stop()
         }

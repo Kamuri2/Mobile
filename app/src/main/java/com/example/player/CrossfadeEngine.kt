@@ -150,13 +150,14 @@ class CrossfadeEngine(
         crossfadeJob = null
         preloadJob = null
 
-        // Safely mute outgoing player so multiple tracks don't overlap
-        if (outgoingPlayer != null && outgoingPlayer != incomingPlayer) {
-            try {
-                outgoingPlayer.volume = 0f
-                outgoingPlayer.stop()
-                outgoingPlayer.clearMediaItems()
-            } catch (_: Exception) {}
+        val actualDur = durationMs.coerceAtLeast(0L)
+
+        // If instant switch (0ms / gapless), immediately stop outgoing
+        if (actualDur <= 40L) {
+            performInstantSwitch(outgoingPlayer, incomingPlayer)
+            isCrossfading = false
+            onComplete()
+            return
         }
 
         currentOutgoingPlayer = outgoingPlayer
@@ -168,21 +169,13 @@ class CrossfadeEngine(
         // 1. Activate incoming player and switch UI state immediately
         onBufferReady()
 
-        // 2. Start incoming player immediately
-        val actualDur = durationMs.coerceIn(0L, 5000L)
+        // 2. Start incoming player smoothly from 0 volume
         try {
             incomingPlayer.seekTo(0)
-            incomingPlayer.volume = if (actualDur <= 40L) userVolume else 0f
+            incomingPlayer.volume = 0f
             incomingPlayer.playWhenReady = true
             incomingPlayer.play()
         } catch (_: Exception) {}
-
-        if (actualDur <= 40L) {
-            performInstantSwitch(outgoingPlayer, incomingPlayer)
-            isCrossfading = false
-            onComplete()
-            return
-        }
 
         crossfadeJob = ensureActiveScope().launch {
             try {

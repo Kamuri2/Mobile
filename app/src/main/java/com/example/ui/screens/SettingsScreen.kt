@@ -588,23 +588,9 @@ fun SettingsScreen(
                                 .background(animatedBgColor)
                                 .border(1.dp, animatedBorderColor, RoundedCornerShape(12.dp))
                                 .clickable { onUpdateSettings(settings.copy(selectedTheme = theme)) }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        Brush.sweepGradient(
-                                            listOf(theme.primaryColor, theme.bgGradientStart, theme.primaryColor)
-                                        )
-                                    )
-                                    .border(1.dp, if (isDark) Color.White.copy(alpha = 0.4f) else Color.Black.copy(alpha = 0.2f), CircleShape)
-                            )
-
-                            Spacer(modifier = Modifier.width(8.dp))
-
                             Text(
                                 text = theme.displayName,
                                 fontSize = 13.sp,
